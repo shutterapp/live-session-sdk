@@ -110,7 +110,7 @@ async function createProducerAgentMedia(): Promise<BrowserMediaSource> {
     };
     worklet.onprocessorerror = () => failCapture(id);
     source.connect(worklet).connect(captureAudio.destination);
-    // WebRTC playout must run for extraction; the SDK's Chromium process is muted.
+    // WebRTC playout drives extraction; Chromium uses fake output streams, not hardware.
     void player.play().catch(() => { if (!stopped && capture?.id === id) failCapture(id); });
   };
 

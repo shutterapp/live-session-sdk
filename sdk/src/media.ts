@@ -58,7 +58,7 @@ export class MediaPublisher {
     this.#browser = await chromium.launch({
       headless: true,
       handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
-      args: ["--mute-audio", "--autoplay-policy=no-user-gesture-required", "--disable-background-timer-throttling",
+      args: ["--disable-audio-output", "--autoplay-policy=no-user-gesture-required", "--disable-background-timer-throttling",
         "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows"],
     });
     if (this.#stopped) return;
