@@ -194,16 +194,36 @@ for (const [scenario, options, expected] of [
   });
 }
 
-test("heartbeat timeout closes the connection", async t => {
+test("heartbeat timeout reconnects and resumes the existing session", { timeout: 10_000 }, async t => {
   const peer = await sessionServer(t, { silentPing: true });
   const logs = [];
   const client = new LiveSessionClient(peer.guestUrl, { heartbeatMs: 20, timeoutMs: 150, logger: e => logs.push(e) });
   t.after(() => client.disconnect());
-  const closed = new Promise(resolve => client.onEvent(e => { if (e.type === "disconnected") resolve(e); }));
   await client.connect();
+  const resumed = new Promise(resolve => client.onEvent(e => { if (e.type === "joined") resolve(e); }));
+  const resume = peer.waitFor("resume");
 
-  await closed;
+  await resumed;
 
   assert.ok(logs.some(e => e.operation === "heartbeat.failed"));
-  await assert.rejects(() => client.knock(), /not joined/);
+  assert.deepEqual(await resume, { cmd: "resume", mid: "3", sid: snapshot.sid });
+  assert.equal(peer.requests.length, 1);
+});
+
+test("transport closure resumes Live without another invitation exchange or knock", { timeout: 10_000 }, async t => {
+  const peer = await sessionServer(t, { numericRid: true });
+  const client = new LiveSessionClient(peer.guestUrl);
+  t.after(() => client.disconnect());
+  await client.connect();
+  await client.knock();
+  const resumed = new Promise(resolve => client.onEvent(e => { if (e.type === "joined") resolve(e); }));
+  const resume = peer.waitFor("resume");
+
+  peer.close();
+  await resumed;
+
+  assert.deepEqual(await resume, { cmd: "resume", mid: "3", sid: snapshot.sid });
+  assert.equal(client.snapshot.area, "Live");
+  assert.equal(peer.requests.length, 1);
+  assert.equal(peer.messages.filter(m => m.cmd === "join").length, 1);
 });

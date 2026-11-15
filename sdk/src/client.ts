@@ -1,6 +1,11 @@
+import { createRequire } from "node:module";
+import type { AlwaysConnected as ConnectionManager, ConnectionStateChangeEvent } from "@deilux/websocket-js";
 import { parseGuestUrl, type GuestSessionAddress } from "./guest-url.js";
 import { object, participant, roomSnapshot, type JsonObject, type RoomSnapshot, type SessionEvent } from "./protocol.js";
 import type { MediaOptions, MediaPublisher } from "./media.js";
+
+// Version 0.2.0's ESM entry has extensionless imports that Node cannot resolve.
+const { AlwaysConnected, ConnectionState } = createRequire(import.meta.url)("@deilux/websocket-js") as typeof import("@deilux/websocket-js");
 
 export interface ClientOptions {
   name?: string;
@@ -23,7 +28,7 @@ interface PendingRequest {
 export class LiveSessionClient {
   readonly address: GuestSessionAddress;
   #options: ClientOptions;
-  #socket?: WebSocket;
+  #connection?: ConnectionManager;
   #snapshot?: RoomSnapshot;
   #deviceId?: string;
   #accessToken?: string;
@@ -32,7 +37,6 @@ export class LiveSessionClient {
   #listeners = new Set<(event: SessionEvent) => void>();
   #pending = new Map<string, PendingRequest>();
   #mid = 0;
-  #heartbeat?: ReturnType<typeof setInterval>;
   #latency = 0;
   #pingInFlight = false;
   #started = false;
@@ -77,14 +81,8 @@ export class LiveSessionClient {
       this.#log("guest.exchange.completed");
       if (this.#closed) throw new Error("Client is closed");
       this.#log("websocket.connecting");
-      await this.#open(url.toString());
-      this.#snapshot = roomSnapshot(await this.#request("join", {
-        room: this.address.roomId, creds: joined.credentials, name: this.#options.name ?? "AI agent",
-      }));
-      this.#log("room.joined");
-      this.#emit({ type: "joined", data: this.#snapshot });
-      this.#startHeartbeat();
-      return this.#snapshot;
+      await this.#open(url.toString(), joined.credentials);
+      return this.#snapshot!;
     } catch (error) {
       this.#log("connection.failed", "error");
       this.#shutdown();
@@ -150,7 +148,7 @@ export class LiveSessionClient {
 
   disconnect(): void {
     if (this.#closed) return;
-    if (this.#snapshot && this.#socket?.readyState === WebSocket.OPEN) {
+    if (this.#snapshot && this.#connection?.state === ConnectionState.Connected) {
       this.#send("leave", { close: false });
       this.#log("room.left");
     }
@@ -218,35 +216,80 @@ export class LiveSessionClient {
     return data.iceServers as RTCIceServer[];
   }
 
-  #open(url: string): Promise<void> {
+  #open(url: string, credentials: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const socket = new WebSocket(url);
-      this.#socket = socket;
       const timer = setTimeout(() => {
         reject(new Error("WebSocket connection timed out"));
         this.#shutdown();
       }, this.#options.timeoutMs ?? 15_000);
-      socket.addEventListener("open", () => { clearTimeout(timer); resolve(); }, { once: true });
-      socket.addEventListener("message", (event) => this.#receive(event.data));
-      socket.addEventListener("error", () => {
-        clearTimeout(timer);
-        reject(new Error("WebSocket connection failed"));
-        this.#log("websocket.failed", "error");
+      const connection = new AlwaysConnected(() => {
+        const socket = new WebSocket(url);
+        const opening = setTimeout(() => connection.handleWebSocketError(socket), this.#options.timeoutMs ?? 15_000);
+        socket.addEventListener("open", () => {
+          clearTimeout(opening);
+          clearTimeout(timer);
+          connection.handleWebSocketOpen();
+        });
+        socket.addEventListener("message", event => this.#receive(event.data));
+        socket.addEventListener("error", () => connection.handleWebSocketError(socket));
+        socket.addEventListener("close", () => {
+          clearTimeout(opening);
+          connection.handleWebSocketClosed(socket);
+        });
+        return socket;
+      }, async () => {
+        const socket = connection.websocket;
+        try {
+          this.#snapshot = roomSnapshot(await (this.#snapshot
+            ? this.#request("resume", { sid: this.#snapshot.sid })
+            : this.#request("join", {
+              room: this.address.roomId, creds: credentials, name: this.#options.name ?? "AI agent",
+            })));
+          return true;
+        } catch (error) {
+          if (connection.websocket !== socket || connection.state === ConnectionState.Reconnecting) return false;
+          clearTimeout(timer);
+          reject(error);
+          this.#shutdown();
+          return false;
+        }
+      }, () => this.#heartbeat(), {
+        heartbeatInterval: this.#options.heartbeatMs ?? 10_000,
+        reconnectDelay: 2_000,
+        connectionTimeout: this.#options.timeoutMs ?? 15_000,
+      });
+      this.#connection = connection;
+      connection.addEventListener("connectiontimeout", () => {
+        if (this.#snapshot) return;
+        reject(new Error("Live join response timed out"));
         this.#shutdown();
       });
-      socket.addEventListener("close", (event) => {
-        clearTimeout(timer);
-        reject(new Error("WebSocket closed before connecting"));
-        this.#shutdown();
-        this.#emit({ type: "disconnected", data: { code: event.code } });
+      connection.addEventListener("statechange", event => {
+        const { state } = event as ConnectionStateChangeEvent;
+        if (state === ConnectionState.Reconnecting) {
+          this.#rejectPending();
+          this.#log("websocket.reconnecting");
+          this.#emit({ type: "reconnecting", data: {} });
+        } else if (state === ConnectionState.Connected) {
+          clearTimeout(timer);
+          this.#log("room.joined");
+          this.#emit({ type: "joined", data: this.#snapshot });
+          resolve();
+        }
       });
+      this.#abort.signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(new Error("Live connection closed"));
+      }, { once: true });
+      connection.activate();
     });
   }
 
   #send(cmd: string, args: JsonObject): string {
-    if (this.#socket?.readyState !== WebSocket.OPEN) throw new Error("WebSocket is not connected");
+    const socket = this.#connection?.websocket as WebSocket | null | undefined;
+    if (socket?.readyState !== WebSocket.OPEN) throw new Error("WebSocket is not connected");
     const mid = String(++this.#mid);
-    this.#socket.send(JSON.stringify({ ...args, cmd, mid }));
+    socket.send(JSON.stringify({ ...args, cmd, mid }));
     return mid;
   }
 
@@ -267,6 +310,7 @@ export class LiveSessionClient {
   }
 
   #receive(raw: unknown): void {
+    if (this.#closed) return;
     let message: unknown;
     try { message = JSON.parse(String(raw)); } catch {
       this.#log("protocol.invalid-json", "error");
@@ -315,21 +359,26 @@ export class LiveSessionClient {
     }
   }
 
-  #startHeartbeat(): void {
-    if (this.#closed) return;
-    this.#heartbeat = setInterval(() => {
-      if (this.#pingInFlight) return;
-      this.#pingInFlight = true;
-      const sentAt = Date.now();
-      void this.#request("ping", { ts: sentAt, latency: this.#latency })
-        .then(() => { this.#latency = Math.round((Date.now() - sentAt) / 2); })
-        .catch(() => { this.#log("heartbeat.failed", "error"); this.#shutdown(); })
-        .finally(() => { this.#pingInFlight = false; });
-    }, this.#options.heartbeatMs ?? 10_000);
+  #heartbeat(): void {
+    if (this.#closed || this.#pingInFlight) return;
+    this.#pingInFlight = true;
+    const socket = this.#connection?.websocket;
+    const sentAt = Date.now();
+    void this.#request("ping", { ts: sentAt, latency: this.#latency })
+      .then(() => { this.#latency = Math.round((Date.now() - sentAt) / 2); })
+      .catch(() => {
+        if (this.#closed || this.#connection?.websocket !== socket ||
+            this.#connection?.state !== ConnectionState.Connected) return;
+        this.#log("heartbeat.failed", "error");
+        this.#connection.handleWebSocketHeartbeatTimeout();
+      })
+      .finally(() => { this.#pingInFlight = false; });
   }
 
   #requireJoined(): void {
-    if (!this.#snapshot || this.#closed) throw new Error("Client is not joined");
+    if (!this.#snapshot || this.#closed || this.#connection?.state !== ConnectionState.Connected) {
+      throw new Error("Client is not joined");
+    }
   }
 
   #shutdown(): void {
@@ -339,14 +388,18 @@ export class LiveSessionClient {
     this.#media = undefined;
     this.#accessToken = undefined;
     this.#abort.abort();
-    clearInterval(this.#heartbeat);
+    this.#rejectPending();
+    this.#connection?.shutdown();
+    this.#log("connection.closed");
+    this.#emit({ type: "disconnected", data: {} });
+  }
+
+  #rejectPending(): void {
     for (const request of this.#pending.values()) {
       clearTimeout(request.timer);
       request.reject(new Error("Live connection closed"));
     }
     this.#pending.clear();
-    this.#socket?.close();
-    this.#log("connection.closed");
   }
 
   #emit(event: SessionEvent): void {

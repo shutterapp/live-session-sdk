@@ -167,7 +167,15 @@ login or Collider registration is required. HTTP redirects are refused.
 `snapshot` tracks room state. `onEvent` returns an unsubscribe function.
 `publish(type,data,recipientId?)` sends an unacknowledged participant event only
 in Live. Heartbeats, pending request timeouts and terminal errors are handled.
-Each client is single-use. There is no automatic retry or reconnect.
+
+Transport loss or a heartbeat timeout emits `reconnecting` and retries after two
+seconds. The next connection sends `resume` with the existing session ID, without
+another invitation exchange or knock. Successful admission or resumption emits
+`joined` with the current snapshot. Pending commands fail on transport loss and
+are not replayed; publishing while reconnecting fails rather than queueing.
+Media stays alive during transport recovery. Explicit disconnect, room closure,
+duplicate-session, invalid protocol messages and rejected handshakes are terminal.
+A disconnected client instance cannot be restarted.
 
 For another local project, build the SDK and install its directory with
 `npm install /absolute/path/to/live-session-sdk/sdk`.

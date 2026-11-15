@@ -11,6 +11,7 @@ export async function sessionServer(t, options = {}) {
   const messages = [];
   const sockets = new Set();
   const waiters = [];
+  let room = snapshot;
   const server = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
@@ -30,6 +31,7 @@ export async function sessionServer(t, options = {}) {
   const ws = new WebSocketServer({ server, path: "/api/live/ws" });
   ws.on("connection", socket => {
     sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
     socket.on("message", raw => {
       const message = JSON.parse(String(raw));
       messages.push(message);
@@ -47,7 +49,11 @@ export async function sessionServer(t, options = {}) {
         if (options.joinError) socket.send(JSON.stringify({ type: "resp", rid: message.mid, error: "forbidden" }));
         else reply(options.malformedSnapshot ? { area: "Live" } : snapshot);
       }
-      if (message.cmd === "knock") reply({ ...snapshot, area: options.waiting ? "WaitingRoom" : "Live", pts: options.participants ?? [self] });
+      if (message.cmd === "resume") reply(room);
+      if (message.cmd === "knock") {
+        room = { ...snapshot, area: options.waiting ? "WaitingRoom" : "Live", pts: options.participants ?? [self] };
+        reply(room);
+      }
       if (message.cmd === "ping" && !options.silentPing) reply({ ts: Date.now(), offset: 0 });
     });
   });

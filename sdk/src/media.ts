@@ -33,6 +33,7 @@ export class MediaPublisher {
   #startup?: Promise<void>;
   #shutdown?: Promise<void>;
   #stopped = false;
+  #reconnecting = false;
   #work: Promise<void> = Promise.resolve();
   #options: MediaOptions;
 
@@ -71,7 +72,7 @@ export class MediaPublisher {
     }));
     await this.#page.goto("https://shutter-media.invalid/");
     await this.#page.exposeFunction("shutterMediaSignal", (type: string, data: unknown, recipientId: string) => {
-      if (this.#stopped) return;
+      if (this.#stopped || this.#reconnecting) return;
       try { this.#session.publish(type, data, recipientId); } catch {
         this.#log("media.signal.failed", true);
         void this.stop();
@@ -92,6 +93,8 @@ export class MediaPublisher {
     });
     if (this.#stopped) return;
     this.#unsubscribe = this.#session.onEvent(event => {
+      if (event.type === "reconnecting") this.#reconnecting = true;
+      if (event.type === "joined") this.#reconnecting = false;
       if (["disconnected", "room.closed", "duplicate-session"].includes(event.type)) {
         void this.stop();
         return;

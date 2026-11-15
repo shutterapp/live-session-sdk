@@ -152,3 +152,6 @@ vite.config.ts.timestamp-*
 models/
 *.onnx
 *.tar.bz2
+
+# roborev snapshots
+/.roborev/
