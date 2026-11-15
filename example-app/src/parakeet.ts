@@ -108,9 +108,14 @@ export class ParakeetTranscriber {
 
   accept(frame: HostAudioFrame): void {
     if (!this.#ready || this.#stopped) return;
-    if (frame.sampleRate !== 16_000 || frame.samples.length !== 1_600 ||
-        !frame.samples.every(value => Number.isFinite(value) && Math.abs(value) <= 1)) {
-      throw new Error("STT expects 100 ms frames of mono 16 kHz normalized PCM");
+    if (frame.sampleRate !== 16_000 || frame.samples.length !== 1_600) {
+      throw new Error("STT expects 100 ms frames of mono 16 kHz PCM");
+    }
+    for (let index = 0; index < frame.samples.length; index++) {
+      const value = frame.samples[index]!;
+      if (!Number.isFinite(value)) throw new Error("STT received non-finite audio");
+      // Web Audio and decoded Opus can exceed unity; the recognizer expects normalized PCM.
+      frame.samples[index] = Math.max(-1, Math.min(1, value));
     }
     if (this.#participantId !== frame.participantId) {
       this.reset();
