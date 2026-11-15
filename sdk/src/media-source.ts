@@ -18,7 +18,7 @@ export interface VideoEncodingOptions {
 
 declare global {
   interface Window {
-    shutterMediaSource: BrowserMediaSource | Promise<BrowserMediaSource>;
-    shutterMediaEmit(event: JsonObject): Promise<void>;
+    studioMediaSource: BrowserMediaSource | Promise<BrowserMediaSource>;
+    studioMediaEmit(event: JsonObject): Promise<void>;
   }
 }

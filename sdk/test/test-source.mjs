@@ -38,4 +38,4 @@ async function createTestSource() {
   };
 }
 
-export const testSourceScript = `window.shutterMediaSource = (${createTestSource.toString()})();`;
+export const testSourceScript = `window.studioMediaSource = (${createTestSource.toString()})();`;

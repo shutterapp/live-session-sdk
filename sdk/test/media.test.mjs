@@ -14,8 +14,8 @@ test("caller-owned browser state and events pass through without application-spe
   await client.startMedia({
     iceServers: [],
     sourceScript: `${testSourceScript}
-      window.shutterMediaSource = Promise.resolve(window.shutterMediaSource).then(source => ({
-        ...source, update(state) { return window.shutterMediaEmit(state); }
+      window.studioMediaSource = Promise.resolve(window.studioMediaSource).then(source => ({
+        ...source, update(state) { return window.studioMediaEmit(state); }
       }));`,
     onEvent: event.resolve,
   });

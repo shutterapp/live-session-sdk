@@ -3,7 +3,7 @@ import { installMatrixVideo, type VideoState } from "./matrix-video.js";
 
 async function createAgentMedia(): Promise<BrowserMediaSource> {
   installMatrixVideo({ captioning: true });
-  const video = window.shutterVideo;
+  const video = window.studioVideo;
   const audio = new AudioContext({ sampleRate: 48_000 });
   const silence = audio.createConstantSource();
   silence.offset.value = 0;
@@ -42,7 +42,7 @@ async function createAgentMedia(): Promise<BrowserMediaSource> {
   let stopped = false;
   let available = true;
   let capture: { id: string; source: MediaStreamAudioSourceNode; worklet: AudioWorkletNode; player: HTMLAudioElement } | undefined;
-  const emit = (event: JsonObject) => window.shutterMediaEmit(event);
+  const emit = (event: JsonObject) => window.studioMediaEmit(event);
   const stopCapture = () => {
     if (!capture) return;
     const previous = capture;
@@ -144,4 +144,4 @@ async function createAgentMedia(): Promise<BrowserMediaSource> {
   };
 }
 
-window.shutterMediaSource = createAgentMedia();
+window.studioMediaSource = createAgentMedia();

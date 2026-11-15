@@ -13,7 +13,7 @@ export interface MatrixVideo {
 }
 
 declare global {
-  interface Window { shutterVideo: MatrixVideo }
+  interface Window { studioVideo: MatrixVideo }
 }
 
 /** Serialized into Chromium; drawing assets and fonts have no external dependencies. */
@@ -142,7 +142,7 @@ export function installMatrixVideo({ captioning }: { captioning: boolean }): voi
   const timer = setInterval(draw, 1000 / 15);
   const track = canvas.captureStream(15).getVideoTracks()[0]!;
   track.contentHint = "detail";
-  window.shutterVideo = {
+  window.studioVideo = {
     track,
     update(change) {
       state = { ...state, ...change };

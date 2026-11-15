@@ -31,15 +31,15 @@ export interface BrowserMediaWorker {
 
 declare global {
   interface Window {
-    shutterMedia: BrowserMediaWorker;
-    shutterMediaSignal(type: string, data: JsonObject, recipientId: string): Promise<void>;
-    shutterMediaLog(operation: string, error: boolean): Promise<void>;
+    studioMedia: BrowserMediaWorker;
+    studioMediaSignal(type: string, data: JsonObject, recipientId: string): Promise<void>;
+    studioMediaLog(operation: string, error: boolean): Promise<void>;
   }
 }
 
 /** Serialized into Chromium. The caller owns tracks and their application behavior. */
 export async function installMediaWorker({ iceServers, initialState, videoEncoding }: MediaWorkerOptions): Promise<void> {
-  const source = await window.shutterMediaSource;
+  const source = await window.studioMediaSource;
   const stream = source.stream;
   if (!(stream instanceof MediaStream) || !stream.getTracks().length ||
       stream.getAudioTracks().length > 1 || stream.getVideoTracks().length > 1) {
@@ -60,9 +60,9 @@ export async function installMediaWorker({ iceServers, initialState, videoEncodi
   const earlyCandidates = new Map<string, RTCIceCandidateInit[]>();
   let selfId = "";
   let stopped = false;
-  const log = (operation: string, error = false) => { void window.shutterMediaLog(operation, error); };
+  const log = (operation: string, error = false) => { void window.studioMediaLog(operation, error); };
   const signal = (type: string, data: JsonObject, id: string) => {
-    if (!stopped) void window.shutterMediaSignal(type, data, id);
+    if (!stopped) void window.studioMediaSignal(type, data, id);
   };
   const notifyState = (peer: Peer, state: RTCPeerConnectionState) => {
     try { source.onPeerState?.(peer.participantId, state); }
@@ -143,7 +143,7 @@ export async function installMediaWorker({ iceServers, initialState, videoEncodi
     return peer;
   };
 
-  window.shutterMedia = {
+  window.studioMedia = {
     async handle(command) {
       if (stopped) return;
       if (command.kind === "source.update") { await source.update?.(command.state); return; }

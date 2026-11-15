@@ -4,7 +4,7 @@ import { installMediaWorker, type MediaCommand, type MediaStats } from "./media-
 import type { VideoEncodingOptions } from "./media-source.js";
 
 export interface MediaOptions {
-  /** Trusted browser bundle defining window.shutterMediaSource. */
+  /** Trusted browser bundle defining window.studioMediaSource. */
   sourceScript: string;
   initialState?: JsonObject;
   /** Opaque events emitted by the caller's browser source. */
@@ -67,21 +67,21 @@ export class MediaPublisher {
     });
     this.#page = await this.#browser.newPage();
     // A locally fulfilled secure origin enables browser crypto without external HTTP traffic.
-    await this.#page.route("https://shutter-media.invalid/", route => route.fulfill({
+    await this.#page.route("https://studio-media.invalid/", route => route.fulfill({
       contentType: "text/html", body: "<!doctype html><html><body></body></html>",
     }));
-    await this.#page.goto("https://shutter-media.invalid/");
-    await this.#page.exposeFunction("shutterMediaSignal", (type: string, data: unknown, recipientId: string) => {
+    await this.#page.goto("https://studio-media.invalid/");
+    await this.#page.exposeFunction("studioMediaSignal", (type: string, data: unknown, recipientId: string) => {
       if (this.#stopped || this.#reconnecting) return;
       try { this.#session.publish(type, data, recipientId); } catch {
         this.#log("media.signal.failed", true);
         void this.stop();
       }
     });
-    await this.#page.exposeFunction("shutterMediaLog", (operation: string, error: boolean) => {
+    await this.#page.exposeFunction("studioMediaLog", (operation: string, error: boolean) => {
       if (!this.#stopped) this.#log(operation, error);
     });
-    await this.#page.exposeFunction("shutterMediaEmit", (event: unknown) => {
+    await this.#page.exposeFunction("studioMediaEmit", (event: unknown) => {
       if (this.#stopped || !object(event)) return;
       try { this.#options.onEvent?.(event); }
       catch { this.#log("media.source.event.failed", true); }
@@ -113,7 +113,7 @@ export class MediaPublisher {
     this.#shutdown = (async () => {
       await this.#startup?.catch(() => {});
       try {
-        if (this.#page && !this.#page.isClosed()) await this.#page.evaluate(() => window.shutterMedia?.stop());
+        if (this.#page && !this.#page.isClosed()) await this.#page.evaluate(() => window.studioMedia?.stop());
       } catch {
         // A crashed renderer is already gone; closing its browser is still required.
       } finally {
@@ -126,7 +126,7 @@ export class MediaPublisher {
 
   async stats(): Promise<MediaStats[]> {
     if (this.#stopped || !this.#page) return [];
-    return this.#page.evaluate(() => window.shutterMedia.stats());
+    return this.#page.evaluate(() => window.studioMedia.stats());
   }
 
   async update(state: JsonObject): Promise<void> {
@@ -164,7 +164,7 @@ export class MediaPublisher {
   }
 
   async #command(command: MediaCommand): Promise<void> {
-    await this.#page?.evaluate(command => window.shutterMedia.handle(command), command);
+    await this.#page?.evaluate(command => window.studioMedia.handle(command), command);
   }
 
 }

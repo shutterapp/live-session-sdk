@@ -183,7 +183,7 @@ For another local project, build the SDK and install its directory with
 ## SDK: caller-owned media
 
 The SDK launches Chromium and handles peer negotiation, SDP and ICE. The caller
-supplies a trusted browser script defining `window.shutterMediaSource`, either
+supplies a trusted browser script defining `window.studioMediaSource`, either
 directly or as a promise resolving to:
 
 ```ts
@@ -207,7 +207,7 @@ await client.stopMedia(); // Keeps Live signaling connected.
 ```
 
 The browser source can send opaque events to its caller with
-`window.shutterMediaEmit(event)`. The SDK does not interpret their contents or
+`window.studioMediaEmit(event)`. The SDK does not interpret their contents or
 source updates. Track generation, capture, UI, audio processing and application
 policy are the caller's responsibility. Only run trusted source scripts.
 

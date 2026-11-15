@@ -160,7 +160,7 @@ export class LiveSessionClient {
     try {
       response = await fetch(endpoint, {
         method: "POST", redirect: "error",
-        headers: { "Content-Type": "application/json", "User-Agent": "shutter-live-session-sdk/0.1" },
+        headers: { "Content-Type": "application/json", "User-Agent": "studio-live-session-sdk/0.1" },
         signal: AbortSignal.any([this.#abort.signal, AbortSignal.timeout(this.#options.timeoutMs ?? 15_000)]),
         body: JSON.stringify({
           roomId: this.address.roomId, joinToken: this.address.guestToken,
