@@ -87,13 +87,13 @@ async function main(): Promise<void> {
       },
     });
     if (stopping) return;
-    await captions.start();
+    const captionChannel = await captions.start();
     if (stopping) return;
     let room = await client.connect();
     await client.startMedia({
       iceUrl: values["ice-url"],
-      sourceScript,
-      onEvent: event => captions.onMediaEvent(event),
+      sourceScript: `window.studioCaptionChannel = ${JSON.stringify(captionChannel)};\n${sourceScript}`,
+      browserPermissions: ["local-network-access"],
       videoEncoding: {
         maxBitrate: 3_000_000, maxFramerate: 15, scaleResolutionDownBy: 1, degradationPreference: "maintain-resolution",
       },

@@ -1,5 +1,10 @@
 import type { BrowserMediaSource, JsonObject } from "@shutter-studio/live-session-sdk";
 import { installMatrixVideo, type VideoState } from "./matrix-video.js";
+import type { CaptionChannelConfig } from "./caption-channel.js";
+
+declare global {
+  interface Window { studioCaptionChannel: CaptionChannelConfig }
+}
 
 async function createAgentMedia(): Promise<BrowserMediaSource> {
   installMatrixVideo({ captioning: true });
@@ -41,8 +46,14 @@ async function createAgentMedia(): Promise<BrowserMediaSource> {
   let hostId: string | undefined;
   let stopped = false;
   let available = true;
+  let generation = 0;
+  let waitingForAck = false;
+  let dropping = false;
+  let socket: WebSocket;
   let capture: { id: string; source: MediaStreamAudioSourceNode; worklet: AudioWorkletNode; player: HTMLAudioElement } | undefined;
-  const emit = (event: JsonObject) => window.studioMediaEmit(event);
+  const emit = (event: JsonObject) => {
+    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event));
+  };
   const stopCapture = () => {
     if (!capture) return;
     const previous = capture;
@@ -56,13 +67,13 @@ async function createAgentMedia(): Promise<BrowserMediaSource> {
     previous.player.srcObject = null;
     previous.player.remove();
     video.update({ listening: false, level: 0 });
-    void emit({ type: "audio.stopped", participantId: previous.id }).catch(() => {});
+    emit({ type: "audio.stopped", participantId: previous.id });
   };
   const failCapture = (id: string) => {
     stopCapture();
     available = false;
     video.update({ transcriptionAvailable: false, listening: false });
-    void emit({ type: "audio.failed", participantId: id }).catch(() => {});
+    emit({ type: "audio.failed", participantId: id });
   };
   const startCapture = () => {
     if (stopped || !available || !hostId || capture) return;
@@ -82,14 +93,20 @@ async function createAgentMedia(): Promise<BrowserMediaSource> {
         listening: true,
         level: Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length),
       });
-      const bytes = new Uint8Array(samples.length * 2);
-      const view = new DataView(bytes.buffer);
-      for (let i = 0; i < samples.length; i++) {
-        view.setInt16(i * 2, Math.round(Math.max(-1, Math.min(1, samples[i]!)) * 32767), true);
+      if (waitingForAck || socket.bufferedAmount > 65_536) {
+        if (!dropping) emit({ type: "audio.dropped", participantId: id });
+        dropping = true;
+        return;
       }
-      void emit({ type: "audio", participantId: id, pcm16: btoa(String.fromCharCode(...bytes)) }).catch(() => {
-        if (!stopped && capture?.id === id) failCapture(id);
-      });
+      // Keep Float32 PCM throughout. The header identifies the selected host generation.
+      const packet = new Uint8Array(4 + samples.byteLength);
+      new DataView(packet.buffer).setUint32(0, generation, true);
+      packet.set(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength), 4);
+      try {
+        socket.send(packet);
+        waitingForAck = true;
+        dropping = false;
+      } catch { failCapture(id); }
     };
     worklet.onprocessorerror = () => failCapture(id);
     source.connect(worklet).connect(captureAudio.destination);
@@ -97,7 +114,7 @@ async function createAgentMedia(): Promise<BrowserMediaSource> {
     void player.play().catch(() => { if (!stopped && capture?.id === id) failCapture(id); });
   };
 
-  return {
+  const source: BrowserMediaSource = {
     stream,
     update(change) {
       if ("hostId" in change) {
@@ -105,6 +122,9 @@ async function createAgentMedia(): Promise<BrowserMediaSource> {
         if (nextId !== hostId) {
           stopCapture();
           hostId = nextId;
+          generation = Number(change.generation);
+          waitingForAck = false;
+          dropping = false;
           video.update({ hostPresent: Boolean(hostId), caption: "", listening: false, level: 0 });
         }
       }
@@ -135,6 +155,7 @@ async function createAgentMedia(): Promise<BrowserMediaSource> {
       if (stopped) return;
       stopped = true;
       stopCapture();
+      socket.close();
       remotes.clear();
       video.stop();
       silence.stop();
@@ -142,6 +163,45 @@ async function createAgentMedia(): Promise<BrowserMediaSource> {
       await Promise.all([audio.close(), captureAudio.close()]);
     },
   };
+
+  socket = new WebSocket(window.studioCaptionChannel.url);
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.close();
+      reject(new Error("Caption channel connection timed out"));
+    }, 10_000);
+    socket.onopen = () => socket.send(JSON.stringify({
+      type: "auth", token: window.studioCaptionChannel.token,
+    }));
+    socket.onmessage = event => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type === "ack" && message.generation === generation) waitingForAck = false;
+        if (message.type === "state") {
+          source.update!(message.state);
+          clearTimeout(timeout);
+          resolve();
+        }
+      } catch {
+        socket.close();
+        reject(new Error("Invalid caption channel message"));
+      }
+    };
+    socket.onerror = () => {
+      clearTimeout(timeout);
+      reject(new Error("Caption channel connection failed"));
+    };
+    socket.onclose = () => {
+      clearTimeout(timeout);
+      reject(new Error("Caption channel closed"));
+      if (!stopped) {
+        available = false;
+        stopCapture();
+        video.update({ transcriptionAvailable: false, listening: false });
+      }
+    };
+  });
+  return source;
 }
 
 window.studioMediaSource = createAgentMedia();

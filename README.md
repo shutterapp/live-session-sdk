@@ -146,6 +146,8 @@ send events back through `window.studioMediaEmit(event)`.
 Use `videoEncoding` to set `maxBitrate`, `maxFramerate`, `scaleResolutionDownBy`
 or `degradationPreference`. Use `iceUrl` to override ICE discovery, or supply
 `iceServers` directly. Disconnecting stops media and calls the source's `stop()`.
+`browserPermissions` grants requested permissions to the media page automatically;
+for example, `["local-network-access"]` allows a source to connect to local services.
 
 See [`example-app/src/browser-entry.ts`](example-app/src/browser-entry.ts) for
 a complete media source.

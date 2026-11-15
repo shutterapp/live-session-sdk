@@ -10,6 +10,8 @@ export interface MediaOptions {
   /** Opaque events emitted by the caller's browser source. */
   onEvent?: (event: JsonObject) => void;
   videoEncoding?: VideoEncodingOptions;
+  /** Browser permissions granted only to the media source's page origin. */
+  browserPermissions?: string[];
   /** Overrides ICE discovery, useful for custom TURN configurations or local peers. */
   iceServers?: RTCIceServer[];
   /** Full ICE HTTP endpoint; defaults to <base>/api/legacy-rooms/ice. */
@@ -66,6 +68,11 @@ export class MediaPublisher {
       }
     });
     this.#page = await this.#browser.newPage();
+    if (this.#options.browserPermissions?.length) {
+      await this.#page.context().grantPermissions(this.#options.browserPermissions, {
+        origin: "https://studio-media.invalid",
+      });
+    }
     // A locally fulfilled secure origin enables browser crypto without external HTTP traffic.
     await this.#page.route("https://studio-media.invalid/", route => route.fulfill({
       contentType: "text/html", body: "<!doctype html><html><body></body></html>",
