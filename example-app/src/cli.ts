@@ -2,7 +2,10 @@
 import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { LiveSessionClient, ensureParakeetModel } from "@shutter-studio/live-session-sdk";
+import { readFile } from "node:fs/promises";
+import { LiveSessionClient } from "@shutter-studio/live-session-sdk";
+import { ensureParakeetModel } from "./parakeet-model.js";
+import { HostCaptions } from "./host-captions.js";
 
 const defaultModelDirectory = fileURLToPath(new URL(
   "../../models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8", import.meta.url,
@@ -44,23 +47,39 @@ async function main(): Promise<void> {
       if (entry.level === "error") process.exitCode = 1;
     },
   });
+  const captions = new HostCaptions(client, {
+    modelDirectory, numThreads: values["stt-threads"] ? Number(values["stt-threads"]) : undefined,
+  }, ({ participantId, text }) => console.log(JSON.stringify({ event: "transcript", participantId, text })),
+  (operation, error) => {
+    console.error(`${error ? "ERROR" : "INFO"} ${operation}`);
+    if (error) process.exitCode = 1;
+  });
+  let mediaReady = false;
   let stopping = false;
   const downloadAbort = new AbortController();
-  const stop = () => { stopping = true; downloadAbort.abort(); client.disconnect(); };
+  const stop = () => {
+    stopping = true;
+    downloadAbort.abort();
+    client.disconnect();
+    void captions.stop();
+  };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   client.onEvent(event => {
     // Session snapshots can contain credentials; print event names, never raw payloads.
     console.log(JSON.stringify({ event: event.type, participantId: event.participantId }));
+    if (mediaReady && ["joined", "room.joined", "room.left"].includes(event.type)) captions.syncParticipants();
     if (event.type === "room.closed") stopping = true;
     if (event.type === "duplicate-session") process.exitCode = 1;
     if (event.type === "disconnected") {
+      void captions.stop();
       if (!stopping) process.exitCode = 1;
       process.off("SIGINT", stop);
       process.off("SIGTERM", stop);
     }
   });
   try {
+    const sourceScript = await readFile(new URL("./browser.js", import.meta.url), "utf8");
     await ensureParakeetModel(modelDirectory, {
       signal: downloadAbort.signal,
       onProgress: ({ file, received, total }) => {
@@ -68,15 +87,31 @@ async function main(): Promise<void> {
       },
     });
     if (stopping) return;
+    await captions.start();
+    if (stopping) return;
     let room = await client.connect();
-    await client.startSyntheticMedia({
+    await client.startMedia({
       iceUrl: values["ice-url"],
-      transcription: {
-        modelDirectory, numThreads: values["stt-threads"] ? Number(values["stt-threads"]) : undefined,
-        onTranscript: ({ participantId, text }) => console.log(JSON.stringify({ event: "transcript", participantId, text })),
+      sourceScript,
+      onEvent: event => captions.onMediaEvent(event),
+      videoEncoding: {
+        maxBitrate: 3_000_000, maxFramerate: 15, scaleResolutionDownBy: 1, degradationPreference: "maintain-resolution",
       },
     });
+    mediaReady = true;
+    captions.syncParticipants();
     if (room.area !== "Live") room = await client.knock();
+    if (room.area === "Live") {
+      client.publish("device.devices.list", [
+        { id: "silent-mic", kind: "audioinput", label: "Silent microphone" },
+        { id: "matrix-camera", kind: "videoinput", label: "Matrix captions" },
+      ]);
+      client.publish("device.devices.state", {
+        audioinput: { current: "silent-mic", pending: null, paused: false, echoCancellation: false, noiseSuppression: false },
+        videoinput: { current: "matrix-camera", pending: null, paused: false },
+        audiooutput: { current: null, pending: null, paused: true },
+      });
+    }
     console.log(JSON.stringify({
       status: "connected", baseUrl: client.address.baseUrl, sessionId: client.address.sessionId,
       roomId: client.address.roomId, deviceId: client.deviceId,
@@ -84,6 +119,7 @@ async function main(): Promise<void> {
     }));
   } catch (error) {
     client.disconnect();
+    await captions.stop();
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
     if (stopping) return;

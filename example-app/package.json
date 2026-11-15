@@ -8,11 +8,14 @@
   "bin": { "live-session": "./dist/cli.js" },
   "engines": { "node": ">=22" },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && esbuild src/browser-entry.ts --bundle --platform=browser --format=iife --target=chrome120 --outfile=dist/browser.js --log-level=warning",
     "prestart": "npm run build --workspace @shutter-studio/live-session-sdk && npm run build",
     "start": "node dist/cli.js"
   },
   "dependencies": {
     "@shutter-studio/live-session-sdk": "0.1.0"
+  },
+  "optionalDependencies": {
+    "sherpa-onnx-node": "2.0.1"
   }
 }

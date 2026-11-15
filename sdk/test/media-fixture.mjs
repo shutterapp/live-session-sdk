@@ -1,5 +1,6 @@
 import { chromium } from "playwright";
-import { SyntheticMediaPublisher } from "../dist/synthetic-media.js";
+import { MediaPublisher } from "../dist/media.js";
+import { testSourceScript } from "./test-source.mjs";
 
 // Only Live signaling is doubled. Both WebRTC endpoints and media decoding are real Chromium.
 export async function mediaPeer(t, options = {}) {
@@ -67,7 +68,12 @@ export async function mediaPeer(t, options = {}) {
       }
     };
   });
-  const publisher = new SyntheticMediaPublisher(session, [], (operation, error) => operations.push({ operation, error }), options);
+  const publisher = new MediaPublisher(session, [], (operation, error) => operations.push({ operation, error }), {
+    sourceScript: testSourceScript,
+    videoEncoding: { maxBitrate: 3_000_000, maxFramerate: 15, scaleResolutionDownBy: 1, degradationPreference: "maintain-resolution" },
+    ...options,
+  });
+  session.updateMedia = state => publisher.update(state);
   t.after(() => publisher.stop());
   return {
     publisher, session, page, operations,

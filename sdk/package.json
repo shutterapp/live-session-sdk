@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Experimental TypeScript Live Session client with optional generated media",
+  "description": "TypeScript Live Session signaling and browser WebRTC transport",
   "license": "Apache-2.0",
   "exports": {
     ".": {
@@ -12,7 +12,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist/**/*.js",
+    "dist/**/*.d.ts"
   ],
   "engines": {
     "node": ">=22"
@@ -23,8 +24,5 @@
   },
   "dependencies": {
     "playwright": "^1.65.1"
-  },
-  "optionalDependencies": {
-    "sherpa-onnx-node": "^2.0.1"
   }
 }

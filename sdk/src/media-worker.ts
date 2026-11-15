@@ -1,14 +1,17 @@
 import type { JsonObject } from "./protocol.js";
+import type { VideoEncodingOptions } from "./media-source.js";
 
 export type MediaCommand =
   | { kind: "enter"; selfId: string; participants: string[] }
   | { kind: "event"; type: string; participantId?: string; data?: JsonObject }
   | { kind: "leave"; participantId: string }
-  | { kind: "host"; participantId?: string }
-  | { kind: "caption"; text: string }
-  | { kind: "transcription-unavailable" };
+  | { kind: "source.update"; state: JsonObject };
 
-export interface MediaWorkerOptions { iceServers: RTCIceServer[]; captureHostAudio: boolean }
+export interface MediaWorkerOptions {
+  iceServers: RTCIceServer[];
+  initialState?: JsonObject;
+  videoEncoding?: VideoEncodingOptions;
+}
 
 export interface MediaStats {
   participantId: string;
@@ -17,7 +20,6 @@ export interface MediaStats {
   videoBytesSent: number;
   videoFramesEncoded: number;
   audioBytesReceived: number;
-  hostAudioFrames: number;
   audioSourceEnergy: number;
 }
 
@@ -32,143 +34,46 @@ declare global {
     shutterMedia: BrowserMediaWorker;
     shutterMediaSignal(type: string, data: JsonObject, recipientId: string): Promise<void>;
     shutterMediaLog(operation: string, error: boolean): Promise<void>;
-    shutterHostAudio(participantId: string, pcm16: string): Promise<void>;
   }
 }
 
-/** Serialized by Playwright into Chromium. All runtime helpers must stay inside this function. */
-export async function installMediaWorker({ iceServers, captureHostAudio }: MediaWorkerOptions): Promise<void> {
-  const video = window.shutterVideo;
-  const videoTrack = video.track;
-
-  const audio = new AudioContext({ sampleRate: 48_000 });
-  const silence = audio.createConstantSource();
-  silence.offset.value = 0;
-  const destination = audio.createMediaStreamDestination();
-  silence.connect(destination);
-  silence.start();
-  await audio.resume();
-  const audioTrack = destination.stream.getAudioTracks()[0]!;
-  const stream = new MediaStream([audioTrack, videoTrack]);
-
-  const captureAudio = captureHostAudio ? new AudioContext({ sampleRate: 16_000 }) : undefined;
-  if (captureAudio) {
-    const moduleUrl = URL.createObjectURL(new Blob([`
-      class HostPcm extends AudioWorkletProcessor {
-        constructor() {
-          super();
-          this.frame = new Float32Array(1600);
-          this.offset = 0;
-        }
-        process(inputs) {
-          const samples = inputs[0]?.[0];
-          if (!samples) return true;
-          for (const value of samples) {
-            this.frame[this.offset++] = value;
-            if (this.offset === 1600) {
-              this.port.postMessage(this.frame, [this.frame.buffer]);
-              this.frame = new Float32Array(1600);
-              this.offset = 0;
-            }
-          }
-          return true;
-        }
-      }
-      registerProcessor("host-pcm", HostPcm);
-    `], { type: "text/javascript" }));
-    try { await captureAudio.audioWorklet.addModule(moduleUrl); }
-    finally { URL.revokeObjectURL(moduleUrl); }
-    await captureAudio.resume();
+/** Serialized into Chromium. The caller owns tracks and their application behavior. */
+export async function installMediaWorker({ iceServers, initialState, videoEncoding }: MediaWorkerOptions): Promise<void> {
+  const source = await window.shutterMediaSource;
+  const stream = source.stream;
+  if (!(stream instanceof MediaStream) || !stream.getTracks().length ||
+      stream.getAudioTracks().length > 1 || stream.getVideoTracks().length > 1) {
+    throw new Error("Media source must provide up to one audio and one video track");
   }
+  if (initialState) await source.update?.(initialState);
 
   interface Peer {
     pc: RTCPeerConnection;
+    participantId: string;
     connectionId: string;
     remoteCandidates: RTCIceCandidateInit[];
     localCandidates: RTCIceCandidateInit[];
     localSent: boolean;
     ignoringOffer: boolean;
-    remoteAudio?: MediaStreamTrack;
-    source?: MediaStreamAudioSourceNode;
-    capture?: AudioWorkletNode;
-    playback?: HTMLAudioElement;
-    hostAudioFrames: number;
   }
   const peers = new Map<string, Peer>();
   const earlyCandidates = new Map<string, RTCIceCandidateInit[]>();
   let selfId = "";
-  let hostId: string | undefined;
   let stopped = false;
   const log = (operation: string, error = false) => { void window.shutterMediaLog(operation, error); };
   const signal = (type: string, data: JsonObject, id: string) => {
     if (!stopped) void window.shutterMediaSignal(type, data, id);
   };
-  const stopCapture = (peer: Peer) => {
-    peer.source?.disconnect();
-    if (peer.playback) {
-      peer.playback.pause();
-      peer.playback.srcObject = null;
-      peer.playback.remove();
-      peer.playback = undefined;
-    }
-    if (peer.capture) {
-      video.update({ listening: false, level: 0 });
-      peer.capture.onprocessorerror = null;
-      peer.capture.port.onmessage = null;
-      peer.capture.port.close();
-      peer.capture.disconnect();
-    }
-    peer.source = undefined;
-    peer.capture = undefined;
-  };
-  const startCapture = (id: string, peer: Peer) => {
-    if (!captureAudio || id !== hostId || !peer.remoteAudio || peer.capture ||
-        peer.pc.connectionState !== "connected") return;
-    peer.source = captureAudio.createMediaStreamSource(new MediaStream([peer.remoteAudio]));
-    peer.capture = new AudioWorkletNode(captureAudio, "host-pcm", {
-      channelCount: 1, channelCountMode: "explicit",
-    });
-    peer.capture.port.onmessage = event => {
-      if (stopped || id !== hostId) return;
-      peer.hostAudioFrames++;
-      const samples = event.data as Float32Array;
-      const level = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
-      video.update({ listening: true, level });
-      const bytes = new Uint8Array(samples.length * 2);
-      const view = new DataView(bytes.buffer);
-      for (let i = 0; i < samples.length; i++) {
-        view.setInt16(i * 2, Math.round(Math.max(-1, Math.min(1, samples[i]!)) * 32767), true);
-      }
-      void window.shutterHostAudio(id, btoa(String.fromCharCode(...bytes))).catch(() => {
-        if (stopped || id !== hostId) return;
-        video.update({ transcriptionAvailable: false, listening: false });
-        log("stt.audio.bridge.failed", true);
-        stopCapture(peer);
-      });
-    };
-    peer.capture.onprocessorerror = () => {
-      video.update({ transcriptionAvailable: false, listening: false });
-      log("stt.audio.capture.failed", true);
-      stopCapture(peer);
-    };
-    // The worklet outputs silence; incoming audio is never played on local speakers.
-    peer.source.connect(peer.capture).connect(captureAudio.destination);
-    // Keep Chromium's WebRTC audio playout active; the worker process is muted.
-    peer.playback = document.createElement("audio");
-    peer.playback.srcObject = new MediaStream([peer.remoteAudio]);
-    document.body.append(peer.playback);
-    void peer.playback.play().catch(() => {
-      if (stopped || id !== hostId || !peer.playback) return;
-      video.update({ transcriptionAvailable: false, listening: false });
-      log("stt.audio.playout.failed", true);
-    });
+  const notifyState = (peer: Peer, state: RTCPeerConnectionState) => {
+    try { source.onPeerState?.(peer.participantId, state); }
+    catch { log("media.source.state.failed", true); }
   };
   const closePeer = (peer: Peer) => {
-    stopCapture(peer);
     peer.pc.onicecandidate = null;
     peer.pc.onconnectionstatechange = null;
     peer.pc.ontrack = null;
     peer.pc.close();
+    notifyState(peer, "closed");
   };
   const candidate = (id: string, value: RTCIceCandidateInit) => signal("webrtc.p2p.ice-candidate", {
     streamId: value.sdpMid, lineIndex: value.sdpMLineIndex, candidate: value.candidate,
@@ -186,14 +91,15 @@ export async function installMediaWorker({ iceServers, captureHostAudio }: Media
     for (const value of peer.remoteCandidates.splice(0)) await peer.pc.addIceCandidate(value);
   };
   const configureVideo = async (peer: Peer) => {
+    if (!videoEncoding) return;
     for (const sender of peer.pc.getSenders()) {
       if (sender.track?.kind !== "video") continue;
       const parameters = sender.getParameters();
-      parameters.degradationPreference = "maintain-resolution";
+      if (videoEncoding.degradationPreference) parameters.degradationPreference = videoEncoding.degradationPreference;
       for (const encoding of parameters.encodings) {
-        encoding.scaleResolutionDownBy = 1;
-        encoding.maxBitrate = 3_000_000;
-        encoding.maxFramerate = 15;
+        if (videoEncoding.scaleResolutionDownBy !== undefined) encoding.scaleResolutionDownBy = videoEncoding.scaleResolutionDownBy;
+        if (videoEncoding.maxBitrate !== undefined) encoding.maxBitrate = videoEncoding.maxBitrate;
+        if (videoEncoding.maxFramerate !== undefined) encoding.maxFramerate = videoEncoding.maxFramerate;
       }
       await sender.setParameters(parameters);
     }
@@ -201,28 +107,26 @@ export async function installMediaWorker({ iceServers, captureHostAudio }: Media
   const createPeer = (id: string, connectionId: string, offer: boolean): Peer => {
     const pc = new RTCPeerConnection({ iceServers });
     const peer: Peer = {
-      pc, connectionId, remoteCandidates: earlyCandidates.get(id) ?? [],
+      pc, participantId: id, connectionId, remoteCandidates: earlyCandidates.get(id) ?? [],
       localCandidates: [], localSent: false, ignoringOffer: false,
-      hostAudioFrames: 0,
     };
     earlyCandidates.delete(id);
     peers.set(id, peer);
     pc.ontrack = event => {
-      if (event.track.kind === "audio") {
-        stopCapture(peer);
-        peer.remoteAudio = event.track;
-        event.track.addEventListener("ended", () => {
-          if (peer.remoteAudio === event.track) stopCapture(peer);
-        }, { once: true });
-        startCapture(id, peer);
-      }
+      try { source.onRemoteTrack?.(id, event.track); }
+      catch { log("media.source.track.failed", true); }
     };
     if (offer) {
-      pc.addTransceiver(audioTrack, { direction: "sendrecv", streams: [stream] });
-      pc.addTransceiver(videoTrack, {
-        direction: "sendrecv", streams: [stream],
-        sendEncodings: [{ scaleResolutionDownBy: 1, maxBitrate: 3_000_000, maxFramerate: 15 }],
-      });
+      for (const kind of ["audio", "video"]) {
+        const track = stream.getTracks().find(track => track.kind === kind);
+        pc.addTransceiver(track ?? kind, {
+          direction: track ? "sendrecv" : "recvonly", streams: track ? [stream] : [],
+          sendEncodings: track?.kind === "video" && videoEncoding ? [{
+            scaleResolutionDownBy: videoEncoding.scaleResolutionDownBy,
+            maxBitrate: videoEncoding.maxBitrate, maxFramerate: videoEncoding.maxFramerate,
+          }] : undefined,
+        });
+      }
     }
     pc.onicecandidate = event => {
       if (!event.candidate || stopped) return;
@@ -233,12 +137,8 @@ export async function installMediaWorker({ iceServers, captureHostAudio }: Media
     pc.onconnectionstatechange = () => {
       if (stopped) return;
       log(`media.peer.${pc.connectionState}`, pc.connectionState === "failed");
-      if (pc.connectionState === "connected") startCapture(id, peer);
-      if (pc.connectionState === "disconnected") stopCapture(peer);
-      if (pc.connectionState === "failed") {
-        closePeer(peer);
-        peers.delete(id);
-      }
+      notifyState(peer, pc.connectionState);
+      if (pc.connectionState === "failed") { closePeer(peer); peers.delete(id); }
     };
     return peer;
   };
@@ -246,21 +146,7 @@ export async function installMediaWorker({ iceServers, captureHostAudio }: Media
   window.shutterMedia = {
     async handle(command) {
       if (stopped) return;
-      if (command.kind === "caption") {
-        video.update({ caption: command.text.replace(/\s+/g, " ").trim().slice(-1_200) });
-        return;
-      }
-      if (command.kind === "transcription-unavailable") {
-        video.update({ transcriptionAvailable: false, listening: false, caption: "" });
-        return;
-      }
-      if (command.kind === "host") {
-        if (hostId === command.participantId) return;
-        hostId = command.participantId;
-        video.update({ hostPresent: Boolean(hostId), listening: false, caption: "", level: 0 });
-        for (const [id, peer] of peers) { stopCapture(peer); startCapture(id, peer); }
-        return;
-      }
+      if (command.kind === "source.update") { await source.update?.(command.state); return; }
       if (command.kind === "leave") {
         const peer = peers.get(command.participantId);
         if (peer) closePeer(peer);
@@ -283,11 +169,7 @@ export async function installMediaWorker({ iceServers, captureHostAudio }: Media
       if (!id || !data) return;
       if (command.type === "webrtc.p2p.offer" && typeof data.sdp === "string" && typeof data.connectionId === "string") {
         let peer = peers.get(id);
-        if (peer && peer.connectionId !== data.connectionId) {
-          closePeer(peer);
-          peers.delete(id);
-          peer = undefined;
-        }
+        if (peer && peer.connectionId !== data.connectionId) { closePeer(peer); peers.delete(id); peer = undefined; }
         peer ??= createPeer(id, data.connectionId, false);
         const collision = peer.pc.signalingState === "have-local-offer";
         peer.ignoringOffer = collision && selfId >= id;
@@ -299,9 +181,9 @@ export async function installMediaWorker({ iceServers, captureHostAudio }: Media
         for (const transceiver of peer.pc.getTransceivers()) {
           const kind = transceiver.receiver.track.kind;
           if (kind !== "audio" && kind !== "video") continue;
-          transceiver.direction = "sendrecv";
-          await transceiver.sender.replaceTrack(kind === "audio" ? audioTrack : videoTrack);
-          transceiver.sender.setStreams(stream);
+          const track = stream.getTracks().find(track => track.kind === kind);
+          transceiver.direction = track ? "sendrecv" : "recvonly";
+          if (track) { await transceiver.sender.replaceTrack(track); transceiver.sender.setStreams(stream); }
         }
         await peer.pc.setLocalDescription(await peer.pc.createAnswer());
         await configureVideo(peer);
@@ -329,14 +211,11 @@ export async function installMediaWorker({ iceServers, captureHostAudio }: Media
     async stats() {
       const result: MediaStats[] = [];
       for (const [participantId, peer] of peers) {
-        const stats = await peer.pc.getStats();
         const row: MediaStats = {
           participantId, state: peer.pc.connectionState,
-          audioBytesSent: 0, videoBytesSent: 0, videoFramesEncoded: 0,
-          audioBytesReceived: 0, hostAudioFrames: peer.hostAudioFrames,
-          audioSourceEnergy: 0,
+          audioBytesSent: 0, videoBytesSent: 0, videoFramesEncoded: 0, audioBytesReceived: 0, audioSourceEnergy: 0,
         };
-        stats.forEach(stat => {
+        (await peer.pc.getStats()).forEach(stat => {
           if (stat.type === "media-source" && stat.kind === "audio") row.audioSourceEnergy += stat.totalAudioEnergy ?? 0;
           if (stat.type === "inbound-rtp" && stat.kind === "audio") row.audioBytesReceived += stat.bytesReceived ?? 0;
           if (stat.type !== "outbound-rtp") return;
@@ -353,14 +232,11 @@ export async function installMediaWorker({ iceServers, captureHostAudio }: Media
     async stop() {
       if (stopped) return;
       stopped = true;
-      video.stop();
-      silence.stop();
-      for (const track of stream.getTracks()) track.stop();
       for (const peer of peers.values()) closePeer(peer);
       peers.clear();
       earlyCandidates.clear();
-      await audio.close();
-      await captureAudio?.close();
+      try { await source.stop(); }
+      finally { for (const track of stream.getTracks()) track.stop(); }
     },
   };
 }

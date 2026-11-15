@@ -1,8 +1,31 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mediaPeer } from "./media-fixture.mjs";
+import { testSourceScript } from "./test-source.mjs";
 import { sessionServer } from "./fixture.mjs";
 import { LiveSessionClient } from "../dist/index.js";
+
+test("caller-owned browser state and events pass through without application-specific interpretation", { timeout: 25_000 }, async t => {
+  const server = await sessionServer(t);
+  const client = new LiveSessionClient(server.guestUrl);
+  t.after(() => client.disconnect());
+  const event = Promise.withResolvers();
+  await client.connect();
+  await client.startMedia({
+    iceServers: [],
+    sourceScript: `${testSourceScript}
+      window.shutterMediaSource = Promise.resolve(window.shutterMediaSource).then(source => ({
+        ...source, update(state) { return window.shutterMediaEmit(state); }
+      }));`,
+    onEvent: event.resolve,
+  });
+
+  await client.updateMedia({ applicationData: { message: "Caller-owned state", values: [1, 2, 3] } });
+  const received = await event.promise;
+  await client.stopMedia();
+
+  assert.deepEqual(received, { applicationData: { message: "Caller-owned state", values: [1, 2, 3] } });
+});
 
 test("Chromium publisher offers changing video and a live silent microphone track", { timeout: 25_000 }, async t => {
   const peer = await mediaPeer(t);
@@ -46,15 +69,15 @@ test("stopping the SDK publisher closes Chromium while signaling remains usable"
   const client = new LiveSessionClient(server.guestUrl, { logger: entry => operations.push(entry.operation) });
   t.after(() => client.disconnect());
   await client.connect();
-  await client.startSyntheticMedia({ iceServers: [] });
+  await client.startMedia({ iceServers: [], sourceScript: testSourceScript });
   await client.knock();
 
-  await client.stopSyntheticMedia();
+  await client.stopMedia();
   const published = server.waitFor("pub");
   client.publish("test.after-media-stop", {});
   const message = await published;
 
-  assert.ok(operations.includes("media.generators.started"));
+  assert.ok(operations.includes("media.source.started"));
   assert.ok(operations.includes("media.stopped"));
   assert.equal(client.snapshot.area, "Live");
   assert.equal(message.type, "test.after-media-stop");
@@ -70,13 +93,14 @@ test("failed SDK media startup closes its worker and permits another explicit st
   await client.connect();
   await client.knock();
 
-  await assert.rejects(client.startSyntheticMedia({ iceServers: [{ urls: "invalid-scheme:private-ice-value" }] }),
-    { message: "Unable to start synthetic media; install Playwright Chromium and check the ICE endpoint" });
-  await client.startSyntheticMedia({ iceServers: [] });
-  await client.stopSyntheticMedia();
+  await assert.rejects(client.startMedia({
+    sourceScript: testSourceScript, iceServers: [{ urls: "invalid-scheme:private-ice-value" }],
+  }), { message: "Unable to start media; check the source script, Playwright Chromium and the ICE endpoint" });
+  await client.startMedia({ iceServers: [], sourceScript: testSourceScript });
+  await client.stopMedia();
 
   assert.equal(operations.filter(operation => operation === "media.stopped").length, 2);
-  assert.ok(operations.includes("media.generators.started"));
+  assert.ok(operations.includes("media.source.started"));
 });
 
 test("stopping during Chromium startup completes cleanup", { timeout: 25_000 }, async t => {

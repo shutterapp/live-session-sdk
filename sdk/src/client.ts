@@ -1,6 +1,6 @@
 import { parseGuestUrl, type GuestSessionAddress } from "./guest-url.js";
 import { object, participant, roomSnapshot, type JsonObject, type RoomSnapshot, type SessionEvent } from "./protocol.js";
-import type { SyntheticMediaOptions, SyntheticMediaPublisher } from "./synthetic-media.js";
+import type { MediaOptions, MediaPublisher } from "./media.js";
 
 export interface ClientOptions {
   name?: string;
@@ -27,7 +27,7 @@ export class LiveSessionClient {
   #snapshot?: RoomSnapshot;
   #deviceId?: string;
   #accessToken?: string;
-  #media?: SyntheticMediaPublisher;
+  #media?: MediaPublisher;
   #startingMedia = false;
   #listeners = new Set<(event: SessionEvent) => void>();
   #pending = new Map<string, PendingRequest>();
@@ -110,17 +110,18 @@ export class LiveSessionClient {
   }
 
   /** Can be prepared in Setup before knock, or started after entering Live. */
-  async startSyntheticMedia(options: SyntheticMediaOptions = {}): Promise<void> {
+  async startMedia(options: MediaOptions): Promise<void> {
     this.#requireJoined();
-    if (this.#media || this.#startingMedia) throw new Error("Synthetic media is already started");
+    if (this.#media || this.#startingMedia) throw new Error("Media is already started");
+    if (!options.sourceScript.trim()) throw new Error("A browser media source script is required");
     this.#startingMedia = true;
     try {
-      const { SyntheticMediaPublisher } = await import("./synthetic-media.js");
+      const { MediaPublisher } = await import("./media.js");
       const iceServers = options.iceServers ?? await this.#loadIceServers(
         options.iceUrl ?? `${this.address.baseUrl}/api/legacy-rooms/ice`,
       );
       this.#requireJoined();
-      this.#media = new SyntheticMediaPublisher(this, iceServers,
+      this.#media = new MediaPublisher(this, iceServers,
         (operation, error) => this.#log(operation, error ? "error" : "info"), options);
       await this.#media.start();
       this.#requireJoined();
@@ -128,26 +129,23 @@ export class LiveSessionClient {
       await this.#media?.stop().catch(() => this.#log("media.stop.failed", "error"));
       this.#media = undefined;
       this.#log("media.start.failed", "error");
-      throw new Error(options.transcription
-        ? "Unable to start captioned media; check local Parakeet files, sherpa-onnx-node, Chromium and the ICE endpoint"
-        : "Unable to start synthetic media; install Playwright Chromium and check the ICE endpoint");
+      throw new Error("Unable to start media; check the source script, Playwright Chromium and the ICE endpoint");
     } finally {
       this.#startingMedia = false;
     }
   }
 
-  async stopSyntheticMedia(): Promise<void> {
+  async stopMedia(): Promise<void> {
     if (!this.#media) return;
-    if (!this.#closed && this.#snapshot?.area === "Live") {
-      this.publish("device.devices.state", {
-        audioinput: { current: null, pending: null, paused: true, echoCancellation: false, noiseSuppression: false },
-        videoinput: { current: null, pending: null, paused: true },
-        audiooutput: { current: null, pending: null, paused: true },
-      });
-    }
     const media = this.#media;
     this.#media = undefined;
     await media.stop();
+  }
+
+  async updateMedia(state: JsonObject): Promise<void> {
+    this.#requireJoined();
+    if (!this.#media) throw new Error("Media is not started");
+    await this.#media.update(state);
   }
 
   disconnect(): void {

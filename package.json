@@ -9,7 +9,10 @@
     "type": "git",
     "url": "https://github.com/shutterapp/live-session-sdk.git"
   },
-  "workspaces": ["sdk", "example-app"],
+  "workspaces": [
+    "sdk",
+    "example-app"
+  ],
   "engines": {
     "node": ">=22",
     "npm": ">=10"
@@ -26,6 +29,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "esbuild": "^0.28.2",
     "typescript": "~5.8.3",
     "ws": "^8.18.0"
   }
