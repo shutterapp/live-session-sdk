@@ -11,13 +11,20 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist"],
-  "engines": { "node": ">=22" },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
     "playwright": "^1.65.1"
+  },
+  "optionalDependencies": {
+    "sherpa-onnx-node": "^2.0.1"
   }
 }

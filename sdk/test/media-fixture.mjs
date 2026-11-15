@@ -2,7 +2,7 @@ import { chromium } from "playwright";
 import { SyntheticMediaPublisher } from "../dist/synthetic-media.js";
 
 // Only Live signaling is doubled. Both WebRTC endpoints and media decoding are real Chromium.
-export async function mediaPeer(t) {
+export async function mediaPeer(t, options = {}) {
   const browser = await chromium.launch({
     headless: true, args: ["--autoplay-policy=no-user-gesture-required"],
   });
@@ -23,6 +23,11 @@ export async function mediaPeer(t) {
         const pc = window.receiver;
         if (type === "webrtc.p2p.offer") {
           await pc.setRemoteDescription({ type: "offer", sdp: data.sdp });
+          if (window.inputTrack) {
+            const audio = pc.getTransceivers().find(t => t.receiver.track.kind === "audio");
+            audio.direction = "sendrecv";
+            await audio.sender.replaceTrack(window.inputTrack);
+          }
           await pc.setLocalDescription(await pc.createAnswer());
           await window.reply("webrtc.p2p.answer", { sdp: pc.localDescription.sdp });
         } else if (type === "webrtc.p2p.answer") {
@@ -62,11 +67,44 @@ export async function mediaPeer(t) {
       }
     };
   });
-  const publisher = new SyntheticMediaPublisher(session, [], (operation, error) => operations.push({ operation, error }));
+  const publisher = new SyntheticMediaPublisher(session, [], (operation, error) => operations.push({ operation, error }), options);
   t.after(() => publisher.stop());
   return {
     publisher, session, page, operations,
     flush: () => work,
+    async prepareAudio(samples, sampleRate) {
+      await page.evaluate(({ samples, sampleRate }) => {
+        window.inputAudio = new AudioContext({ sampleRate });
+        window.inputSource = window.inputAudio.createBufferSource();
+        const buffer = window.inputAudio.createBuffer(1, samples.length, sampleRate);
+        buffer.copyToChannel(Float32Array.from(samples), 0);
+        window.inputSource.buffer = buffer;
+        const destination = window.inputAudio.createMediaStreamDestination();
+        window.inputSource.connect(destination);
+        window.inputTrack = destination.stream.getAudioTracks()[0];
+      }, { samples: Array.from(samples), sampleRate });
+    },
+    async playAudio() {
+      await page.evaluate(async () => {
+        await window.inputAudio.resume();
+        window.inputSource.start();
+      });
+    },
+    async captionPixels() {
+      return page.evaluate(() => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 640;
+        canvas.height = 360;
+        const context = canvas.getContext("2d");
+        context.drawImage(window.video, 0, 0, 640, 360);
+        const pixels = context.getImageData(40, 120, 560, 150).data;
+        let bright = 0;
+        for (let i = 0; i < pixels.length; i += 4) {
+          if (pixels[i + 1] > 180 && pixels[i + 1] > pixels[i] * 1.25 && pixels[i + 1] > pixels[i + 2] * 1.15) bright++;
+        }
+        return bright;
+      });
+    },
     async offer() {
       const sdp = await page.evaluate(async () => {
         window.receiver.addTransceiver("audio", { direction: "recvonly" });
@@ -81,8 +119,9 @@ export async function mediaPeer(t) {
         const deadline = Date.now() + 15_000;
         while (true) {
           const stats = [...(await window.receiver.getStats()).values()];
-          const audioReady = stats.some(row => row.type === "inbound-rtp" && row.kind === "audio" && row.totalAudioEnergy > 0);
-          const videoReady = stats.some(row => row.type === "inbound-rtp" && row.kind === "video" && row.framesDecoded >= 5);
+          const audioReady = stats.some(row => row.type === "inbound-rtp" && row.kind === "audio" && row.bytesReceived > 0);
+          const videoReady = stats.some(row => row.type === "inbound-rtp" && row.kind === "video" &&
+            row.framesDecoded >= 5 && row.frameWidth === 1280 && row.frameHeight === 720);
           if (audioReady && videoReady) break;
           if (Date.now() > deadline) throw new Error("Timed out waiting for decoded audio/video");
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -91,16 +130,17 @@ export async function mediaPeer(t) {
         const audio = stats.find(row => row.type === "inbound-rtp" && row.kind === "audio");
         const video = stats.find(row => row.type === "inbound-rtp" && row.kind === "video");
         const canvas = document.createElement("canvas");
-        canvas.width = 640;
-        canvas.height = 360;
+        canvas.width = 1280;
+        canvas.height = 720;
         const context = canvas.getContext("2d");
         context.drawImage(window.video, 0, 0);
-        const first = context.getImageData(0, 0, 640, 360).data;
+        const first = context.getImageData(0, 0, 1280, 720).data;
         await new Promise(resolve => setTimeout(resolve, 400));
         context.drawImage(window.video, 0, 0);
-        const second = context.getImageData(0, 0, 640, 360).data;
+        const second = context.getImageData(0, 0, 1280, 720).data;
         return {
-          energy: audio.totalAudioEnergy, audioBytes: audio.bytesReceived,
+          energy: audio?.totalAudioEnergy ?? 0, audioBytes: audio?.bytesReceived ?? 0,
+          audioRms: Math.sqrt((audio?.totalAudioEnergy ?? 0) / (audio?.totalSamplesDuration || 1)),
           frames: video.framesDecoded, width: window.video.videoWidth, height: window.video.videoHeight,
           changing: first.some((value, index) => value !== second[index]),
         };

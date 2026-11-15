@@ -4,7 +4,7 @@ import { mediaPeer } from "./media-fixture.mjs";
 import { sessionServer } from "./fixture.mjs";
 import { LiveSessionClient } from "../dist/index.js";
 
-test("Chromium publisher offers changing video and non-silent white noise to an existing participant", { timeout: 25_000 }, async t => {
+test("Chromium publisher offers changing video and a live silent microphone track", { timeout: 25_000 }, async t => {
   const peer = await mediaPeer(t);
   peer.session.snapshot.pts = [{ cid: "remote" }];
 
@@ -13,24 +13,29 @@ test("Chromium publisher offers changing video and non-silent white noise to an 
   await peer.flush();
   const [stats] = await peer.publisher.stats();
 
-  assert.ok(received.energy > 0 && received.audioBytes > 0);
+  assert.equal(stats.audioSourceEnergy, 0);
+  assert.ok(received.audioRms < 0.0001, "Decoded audio must remain below -80 dBFS (Opus may add a noise floor)");
+  assert.ok(received.audioBytes > 0);
   assert.ok(received.frames >= 5 && received.changing);
-  assert.equal(received.width, 640);
-  assert.equal(received.height, 360);
+  assert.equal(received.width, 1280);
+  assert.equal(received.height, 720);
   assert.equal(stats.state, "connected");
   assert.ok(stats.audioBytesSent > 0 && stats.videoBytesSent > 0 && stats.videoFramesEncoded > 0);
   assert.equal(peer.operations.some(row => row.error), false);
 });
 
-test("Chromium publisher answers an incoming participant with generated audio and video", { timeout: 25_000 }, async t => {
+test("Chromium publisher answers an incoming participant with video and a silent microphone track", { timeout: 25_000 }, async t => {
   const peer = await mediaPeer(t);
   await peer.publisher.start();
 
   await peer.offer();
   const received = await peer.received();
   await peer.flush();
+  const [stats] = await peer.publisher.stats();
 
-  assert.ok(received.energy > 0 && received.changing);
+  assert.equal(stats.audioSourceEnergy, 0);
+  assert.ok(received.audioRms < 0.0001, "Decoded audio must remain below -80 dBFS (Opus may add a noise floor)");
+  assert.ok(received.audioBytes > 0 && received.changing);
   assert.ok(peer.operations.some(row => row.operation === "media.answer.sent"));
   assert.equal(peer.operations.some(row => row.error), false);
 });

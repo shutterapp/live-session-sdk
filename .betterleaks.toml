@@ -1,10 +1,10 @@
 title = "Live Session SDK secret scanning"
 betterleaksMinVersion = "1.10.1"
 
-# Dependencies and generated output are not maintained source.
+# Dependencies, downloaded models and generated output are not maintained source.
 prefilter = '''
 filter.matchesAny(attributes["path"], [
-  `(?:^|/)(?:node_modules|dist|\.git)(?:/|$)`
+  `(?:^|/)(?:node_modules|dist|\.git|models)(?:/|$)`
 ])
 '''
 

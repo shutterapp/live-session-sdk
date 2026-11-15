@@ -1,12 +1,22 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { LiveSessionClient } from "@shutter-studio/live-session-sdk";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { LiveSessionClient, ensureParakeetModel } from "@shutter-studio/live-session-sdk";
 
-const usage = `Usage: live-session '<guest URL>' [--name 'AI agent'] [--device-id UUID] [--setup-only]
+const defaultModelDirectory = fileURLToPath(new URL(
+  "../../models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8", import.meta.url,
+));
 
-Connects a headless guest. --synthetic-media publishes quiet white noise and 640x360 test video.
+const usage = `Usage: live-session '<guest URL>' [--name 'AI agent'] [--device-id UUID]
+
+Transcribes host audio locally with English Parakeet and displays captions on generated video.
+Completed host transcripts are printed to stdout as JSON.
+Requires Chromium. Missing model files are downloaded automatically before joining.
+--parakeet-model DIR overrides the local model directory.
+--stt-threads N sets CPU inference threads (default 2, range 1-16).
 No producer privileges or recording uploads.
-Default: join Setup, then knock to enter Live. Ctrl+C leaves without closing the room.
+Joins Setup, then knocks to enter Live. Ctrl+C leaves without closing the room.
 Use --rooms-url and --ws-url for deployments with different API routes.
 URLs contain a guest credential. Quote them and keep shell history private.`;
 
@@ -15,14 +25,17 @@ async function main(): Promise<void> {
     allowPositionals: true,
     options: {
       help: { type: "boolean", short: "h" }, name: { type: "string" },
-      "device-id": { type: "string" }, "setup-only": { type: "boolean" },
+      "device-id": { type: "string" },
       "rooms-url": { type: "string" }, "ws-url": { type: "string" },
-      "synthetic-media": { type: "boolean" }, "ice-url": { type: "string" },
+      "ice-url": { type: "string" },
+      "parakeet-model": { type: "string" }, "stt-threads": { type: "string" },
     },
   });
   if (values.help) { console.log(usage); return; }
   if (positionals.length !== 1) throw new Error(usage);
-  if (values["setup-only"] && values["synthetic-media"]) throw new Error("--synthetic-media cannot be combined with --setup-only");
+  const modelDirectory = values["parakeet-model"]
+    ? resolve(process.env.INIT_CWD ?? process.cwd(), values["parakeet-model"])
+    : defaultModelDirectory;
   const client = new LiveSessionClient(positionals[0]!, {
     name: values.name, deviceId: values["device-id"],
     roomsUrl: values["rooms-url"], webSocketUrl: values["ws-url"],
@@ -32,7 +45,8 @@ async function main(): Promise<void> {
     },
   });
   let stopping = false;
-  const stop = () => { stopping = true; client.disconnect(); };
+  const downloadAbort = new AbortController();
+  const stop = () => { stopping = true; downloadAbort.abort(); client.disconnect(); };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   client.onEvent(event => {
@@ -47,19 +61,32 @@ async function main(): Promise<void> {
     }
   });
   try {
+    await ensureParakeetModel(modelDirectory, {
+      signal: downloadAbort.signal,
+      onProgress: ({ file, received, total }) => {
+        console.error(`INFO stt.model.download ${file} ${Math.floor(received / total * 100)}%`);
+      },
+    });
+    if (stopping) return;
     let room = await client.connect();
-    if (values["synthetic-media"]) await client.startSyntheticMedia({ iceUrl: values["ice-url"] });
-    if (!values["setup-only"] && room.area !== "Live") room = await client.knock();
+    await client.startSyntheticMedia({
+      iceUrl: values["ice-url"],
+      transcription: {
+        modelDirectory, numThreads: values["stt-threads"] ? Number(values["stt-threads"]) : undefined,
+        onTranscript: ({ participantId, text }) => console.log(JSON.stringify({ event: "transcript", participantId, text })),
+      },
+    });
+    if (room.area !== "Live") room = await client.knock();
     console.log(JSON.stringify({
       status: "connected", baseUrl: client.address.baseUrl, sessionId: client.address.sessionId,
       roomId: client.address.roomId, deviceId: client.deviceId,
       participantId: room.self.cid, role: room.self.r, area: room.area,
-      syntheticMedia: values["synthetic-media"] ?? false,
     }));
   } catch (error) {
     client.disconnect();
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
+    if (stopping) return;
     throw error;
   }
 }

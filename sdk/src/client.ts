@@ -121,14 +121,16 @@ export class LiveSessionClient {
       );
       this.#requireJoined();
       this.#media = new SyntheticMediaPublisher(this, iceServers,
-        (operation, error) => this.#log(operation, error ? "error" : "info"));
+        (operation, error) => this.#log(operation, error ? "error" : "info"), options);
       await this.#media.start();
       this.#requireJoined();
     } catch {
       await this.#media?.stop().catch(() => this.#log("media.stop.failed", "error"));
       this.#media = undefined;
       this.#log("media.start.failed", "error");
-      throw new Error("Unable to start synthetic media; install Playwright Chromium and check the ICE endpoint");
+      throw new Error(options.transcription
+        ? "Unable to start captioned media; check local Parakeet files, sherpa-onnx-node, Chromium and the ICE endpoint"
+        : "Unable to start synthetic media; install Playwright Chromium and check the ICE endpoint");
     } finally {
       this.#startingMedia = false;
     }

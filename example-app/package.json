@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Example CLI consuming the Live Session SDK",
+  "description": "Local Parakeet host-caption CLI using the Live Session SDK",
   "license": "Apache-2.0",
   "bin": { "live-session": "./dist/cli.js" },
   "engines": { "node": ">=22" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prestart": "npm run build --workspace @shutter-studio/live-session-sdk && npm run build",
     "start": "node dist/cli.js"
   },
   "dependencies": {
