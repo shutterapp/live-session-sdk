@@ -208,3 +208,52 @@ test("context shutdown ends one run without a process signal", async t => {
 
   assert.equal(cleaned, true);
 });
+
+test("shutdown disposes a resource acquired after cancellation during entry setup", async t => {
+  const peer = await sessionServer(t);
+  const shutdown = new AbortController();
+  t.after(() => shutdown.abort());
+  const started = Promise.withResolvers();
+  const acquisition = Promise.withResolvers();
+  let resource;
+  let disposed;
+  const done = runAgent(defineAgent({
+    entry: async ctx => {
+      ctx.onShutdown(() => { disposed = resource; });
+      started.resolve();
+      resource = await acquisition.promise;
+    },
+  }), { guestUrl: peer.guestUrl, signal: shutdown.signal });
+  await started.promise;
+  const acquired = { id: "late-resource" };
+
+  shutdown.abort();
+  acquisition.resolve(acquired);
+  await done;
+
+  assert.equal(disposed, acquired);
+});
+
+test("entry can register cleanup after an in-flight acquisition completes during shutdown", async t => {
+  const peer = await sessionServer(t);
+  const shutdown = new AbortController();
+  t.after(() => shutdown.abort());
+  const started = Promise.withResolvers();
+  const acquisition = Promise.withResolvers();
+  let disposed;
+  const done = runAgent(defineAgent({
+    entry: async ctx => {
+      started.resolve();
+      const resource = await acquisition.promise;
+      ctx.onShutdown(() => { disposed = resource; });
+    },
+  }), { guestUrl: peer.guestUrl, signal: shutdown.signal });
+  await started.promise;
+  const acquired = { id: "late-registration" };
+
+  shutdown.abort();
+  acquisition.resolve(acquired);
+  await done;
+
+  assert.equal(disposed, acquired);
+});

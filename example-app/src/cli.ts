@@ -40,8 +40,8 @@ async function main(): Promise<void> {
     console.error(`${error ? "ERROR" : "INFO"} ${operation}`);
     if (error && !shutdown.signal.aborted) process.exitCode = 1;
   };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
   try {
     try {
       await ensureParakeetModel(modelDirectory, {

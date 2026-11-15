@@ -44,6 +44,7 @@ export async function runAgent(definition: AgentDefinition, options: RunOptions)
   const subscriptions = new Set<() => void>();
   const handlers = new Set<Promise<void>>();
   let stopping = false;
+  let cleaningUp = false;
   let failure: unknown;
   let entry: Promise<void> | undefined;
 
@@ -90,7 +91,7 @@ export async function runAgent(definition: AgentDefinition, options: RunOptions)
   const context: RunContext = {
     room, signal: controller.signal,
     onShutdown(cleanup) {
-      if (stopping) throw new Error("Cannot register cleanup after shutdown");
+      if (cleaningUp) throw new Error("Cannot register cleanup during cleanup");
       cleanups.push(cleanup);
     },
     shutdown: () => stop(),
@@ -125,13 +126,15 @@ export async function runAgent(definition: AgentDefinition, options: RunOptions)
     stop();
     options.signal?.removeEventListener("abort", onAbort);
     unsubscribe();
+    // Acquisitions may finish after cancellation; dispose only once their work has settled.
+    await entry;
+    await Promise.allSettled(handlers);
     for (const remove of subscriptions) remove();
+    cleaningUp = true;
     for (const cleanup of cleanups.reverse()) {
       try { await cleanup(); }
       catch (error) { failure ??= error; }
     }
-    await entry;
-    await Promise.allSettled(handlers);
     try { await client.close(); }
     catch (error) { failure ??= error; }
     options.connection?.logger?.({ level: failure === undefined ? "info" : "error", operation: "agent.stopped" });
