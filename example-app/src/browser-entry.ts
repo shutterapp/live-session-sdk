@@ -6,7 +6,7 @@ declare global {
   interface Window { studioCaptionChannel: CaptionChannelConfig }
 }
 
-async function createAgentMedia(): Promise<BrowserMediaSource> {
+async function createProducerAgentMedia(): Promise<BrowserMediaSource> {
   installMatrixVideo({ captioning: true });
   const video = window.studioVideo;
   const audio = new AudioContext({ sampleRate: 48_000 });
@@ -204,4 +204,4 @@ async function createAgentMedia(): Promise<BrowserMediaSource> {
   return source;
 }
 
-window.studioMediaSource = createAgentMedia();
+window.studioMediaSource = createProducerAgentMedia();

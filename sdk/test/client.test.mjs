@@ -227,3 +227,51 @@ test("transport closure resumes Live without another invitation exchange or knoc
   assert.equal(peer.requests.length, 1);
   assert.equal(peer.messages.filter(m => m.cmd === "join").length, 1);
 });
+
+test("generic commands resolve with the server response correlated by numeric rid", async t => {
+  const peer = await sessionServer(t, { command: "room-control", commandResult: { accepted: true }, numericRid: true });
+  const client = new LiveSessionClient(peer.guestUrl);
+  t.after(() => client.close());
+  await client.connect();
+
+  const result = await client.command("room-control", { setting: "value" });
+
+  assert.deepEqual(result, { accepted: true });
+  assert.deepEqual(peer.messages.at(-1), { setting: "value", cmd: "room-control", mid: "2" });
+});
+
+test("generic commands reject server permission errors", async t => {
+  const peer = await sessionServer(t, { command: "room-control", commandError: true });
+  const client = new LiveSessionClient(peer.guestUrl);
+  t.after(() => client.close());
+  await client.connect();
+
+  await assert.rejects(client.command("room-control"), /rejected by the server/);
+});
+
+test("startRecording sends the existing on-behalf-of wire payload without inventing an acknowledgement", async t => {
+  const peer = await sessionServer(t);
+  const client = new LiveSessionClient(peer.guestUrl);
+  t.after(() => client.close());
+  await client.connect();
+  await client.knock();
+  const sent = peer.waitFor("record-start");
+
+  const result = client.startRecording({ onBehalfOf: ["100|1"] });
+
+  assert.equal(result, undefined);
+  assert.deepEqual(await sent, { cmd: "record-start", mid: "3", "on-behalf-of": ["100|1"] });
+});
+
+test("stopRecording sends the recording ID without awaiting an unsupported RPC reply", async t => {
+  const peer = await sessionServer(t);
+  const client = new LiveSessionClient(peer.guestUrl);
+  t.after(() => client.close());
+  await client.connect();
+  await client.knock();
+  const sent = peer.waitFor("record-stop");
+
+  client.stopRecording("recording-42");
+
+  assert.deepEqual(await sent, { cmd: "record-stop", mid: "3", id: "recording-42" });
+});

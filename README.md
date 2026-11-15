@@ -1,7 +1,7 @@
 # Shutter Studio Live Session SDK
 
 TypeScript SDK for joining Shutter Studio Live Sessions, exchanging participant
-events and sending or receiving audio/video. Includes a caption-agent example
+events and sending or receiving audio/video. Includes a producer agent example
 that transcribes the host and displays captions in the room.
 
 The SDK is in `sdk/`; the example is in `example-app/`. Both are experimental
@@ -27,7 +27,7 @@ On Linux, if Chromium reports missing system libraries, run
 Later runs reuse the downloaded files. Keep optional npm dependencies enabled
 for the example.
 
-The agent joins Setup, requests admission to Live, and transcribes the host's
+The producer agent joins Setup, requests admission to Live, and transcribes the host's
 English speech locally. It sends a 1280×720 Matrix-style caption video and a
 silent audio track. Captions appear after speech pauses. The listening indicator
 shows whether host audio is arriving.
@@ -48,13 +48,9 @@ credential, and quote it in shell commands.
 
 | Option | Meaning |
 |---|---|
-| `--name NAME` | Display name, default `AI agent` |
-| `--device-id UUID` | Reuse a previously returned device ID |
+| `--name NAME` | Display name, default `Producer agent` |
 | `--parakeet-model DIR` | Model directory, default `models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8` |
 | `--stt-threads N` | Inference threads, default `2`, range `1`–`16` |
-| `--rooms-url URL` | Invitation endpoint override |
-| `--ws-url URL` | Live WebSocket endpoint override |
-| `--ice-url URL` | ICE configuration endpoint override |
 
 Relative model paths resolve from the directory where you run the command.
 The default model directory is inside this checkout.
@@ -75,7 +71,51 @@ npm run build -w sdk
 npm install /absolute/path/to/live-session-sdk/sdk
 ```
 
-### Join a session
+### Define an agent
+
+```ts
+import { defineAgent, runAgent } from "@shutter-studio/live-session-sdk";
+
+const agent = defineAgent({
+  entry: async ctx => {
+    ctx.room.on("room.joined", ({ data }) => {
+      console.log("Participant joined:", data.cid, data.r);
+    });
+
+    ctx.room.on("recording.started", ({ data }) => {
+      console.log("Recording started:", data.id);
+    });
+  },
+});
+
+const shutdown = new AbortController();
+await runAgent(agent, {
+  guestUrl,
+  connection: { name: "My agent" },
+  signal: shutdown.signal,
+});
+```
+
+Abort the controller to stop a run. The SDK connects, requests Live admission,
+then calls `entry()` once. Returning from `entry()` finishes setup; the run stays
+active until shutdown or room closure. Reconnection resumes the same run without
+calling `entry()` again.
+
+`ctx.room` provides the current snapshot, events, commands and media methods.
+Use `ctx.onShutdown()` to register application cleanup, and `ctx.signal` to cancel
+ongoing work. Register cleanup before starting asynchronous work. Call
+`ctx.shutdown()` to request an end to the run.
+
+`runAgent()` waits for cleanup, event handlers and media shutdown before returning.
+Entry or event-handler failures end the run and reject its promise. Application
+work must honor cancellation; the SDK does not forcibly terminate your code.
+
+See [`example-app/src/producer-agent.ts`](example-app/src/producer-agent.ts) for
+the producer agent definition.
+
+### Connect directly
+
+Use `LiveSessionClient` when you want to manage the connection and lifecycle yourself:
 
 ```ts
 import { LiveSessionClient } from "@shutter-studio/live-session-sdk";
@@ -109,6 +149,33 @@ recovery throws.
 
 Disconnect, room closure, duplicate-session and protocol rejection stop the
 client. Create a new client for a new connection.
+Use `await client.close()` to also wait for media shutdown.
+
+### Commands and events
+
+Both APIs support:
+
+```ts
+room.on("room.left", ({ data }) => console.log("Participant left:", data.cid));
+room.on("layout.changed", event => handleLayout(event.data));
+room.onEvent(event => handleAnyEvent(event));
+
+const response = await room.command("custom-command", { setting: "value" });
+room.sendCommand("custom-notification", { setting: "value" });
+
+room.startRecording();
+room.stopRecording();
+```
+
+Here `room` is `ctx.room` or a `LiveSessionClient`.
+`on()` filters events by name and types established protocol payloads.
+`onEvent()` receives all events. Custom event names and payloads pass through;
+`snapshot` supplies the state of participants already in the room.
+
+Use `command()` only for commands with server replies. `sendCommand()` sends
+without awaiting a reply. Recording commands are send-only: listen for
+`recording.started` and `recording.stopped` to observe state changes.
+The server controls authorization.
 
 ### Send and receive media
 

@@ -55,6 +55,10 @@ export async function sessionServer(t, options = {}) {
         reply(room);
       }
       if (message.cmd === "ping" && !options.silentPing) reply({ ts: Date.now(), offset: 0 });
+      if (message.cmd === options.command) {
+        if (options.commandError) socket.send(JSON.stringify({ type: "resp", rid: message.mid, error: "forbidden" }));
+        else reply(options.commandResult);
+      }
     });
   });
   server.listen(0, "127.0.0.1");
@@ -72,6 +76,10 @@ export async function sessionServer(t, options = {}) {
     send: data => { for (const socket of sockets) socket.send(JSON.stringify(data)); },
     raw: text => { for (const socket of sockets) socket.send(text); },
     close: () => { for (const socket of sockets) socket.close(1001); },
+    admit: () => {
+      room = { ...room, area: "Live", pts: options.participants ?? [self] };
+      for (const socket of sockets) socket.send(JSON.stringify({ type: "resp", cmd: "join", data: room }));
+    },
     waitFor: cmd => new Promise(resolve => waiters.push({ cmd, resolve })),
   };
 }

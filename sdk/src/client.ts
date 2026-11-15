@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import type { AlwaysConnected as ConnectionManager, ConnectionStateChangeEvent } from "@deilux/websocket-js";
 import { parseGuestUrl, type GuestSessionAddress } from "./guest-url.js";
-import { object, participant, roomSnapshot, type JsonObject, type RoomSnapshot, type SessionEvent } from "./protocol.js";
+import { object, participant, roomSnapshot, type EventHandler, type JsonObject, type RoomSnapshot, type SessionEvent } from "./protocol.js";
 import type { MediaOptions, MediaPublisher } from "./media.js";
 
 // Version 0.2.0's ESM entry has extensionless imports that Node cannot resolve.
@@ -20,6 +20,7 @@ export interface ClientOptions {
 }
 
 interface PendingRequest {
+  cmd: string;
   resolve: (data: unknown) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -34,7 +35,8 @@ export class LiveSessionClient {
   #accessToken?: string;
   #media?: MediaPublisher;
   #startingMedia = false;
-  #listeners = new Set<(event: SessionEvent) => void>();
+  #listeners = new Set<EventHandler>();
+  #stoppingMedia?: Promise<void>;
   #pending = new Map<string, PendingRequest>();
   #mid = 0;
   #latency = 0;
@@ -54,9 +56,47 @@ export class LiveSessionClient {
   get snapshot(): RoomSnapshot | undefined { return this.#snapshot; }
   get deviceId(): string | undefined { return this.#deviceId; }
 
-  onEvent(listener: (event: SessionEvent) => void): () => void {
+  onEvent(listener: EventHandler): () => void {
     this.#listeners.add(listener);
     return () => { this.#listeners.delete(listener); };
+  }
+
+  on<T extends string>(type: T, listener: EventHandler<T>): () => void {
+    return this.onEvent(event => {
+      if (event.type === type) return listener(event as SessionEvent<T>);
+    });
+  }
+
+  /** For commands with a correlated server response. */
+  async command(cmd: string, args: JsonObject = {}): Promise<unknown> {
+    this.#requireJoined();
+    this.#validateCommand(cmd, args);
+    this.#log("room.command.started");
+    try {
+      const result = await this.#request(cmd, args);
+      this.#log("room.command.completed");
+      return result;
+    } catch (error) {
+      this.#log("room.command.failed", "error");
+      throw error;
+    }
+  }
+
+  /** For commands whose outcome is delivered as events, not RPC replies. */
+  sendCommand(cmd: string, args: JsonObject = {}): void {
+    this.#requireJoined();
+    this.#validateCommand(cmd, args);
+    this.#send(cmd, args);
+    this.#log("room.command.sent");
+  }
+
+  /** Confirmation arrives through recording events; permissions are server-owned. */
+  startRecording(options: { onBehalfOf?: string[] } = {}): void {
+    this.sendCommand("record-start", options.onBehalfOf ? { "on-behalf-of": options.onBehalfOf } : {});
+  }
+
+  stopRecording(id?: string): void {
+    this.sendCommand("record-stop", id ? { id } : {});
   }
 
   /** Joins Setup; knock() requests entry to Live. A client instance is single-use. */
@@ -93,10 +133,9 @@ export class LiveSessionClient {
   async knock(): Promise<RoomSnapshot> {
     this.#requireJoined();
     // Live replies to knock with cmd=join; correlation is by rid, not command name.
-    this.#snapshot = roomSnapshot(await this.#request("knock", {}));
+    await this.#request("knock", {});
     this.#log("room.knocked");
-    this.#emit({ type: "joined", data: this.#snapshot });
-    return this.#snapshot;
+    return this.#snapshot!;
   }
 
   /** Sends a participant event. The server does not acknowledge pub commands. */
@@ -134,10 +173,11 @@ export class LiveSessionClient {
   }
 
   async stopMedia(): Promise<void> {
-    if (!this.#media) return;
+    if (!this.#media) { await this.#stoppingMedia; return; }
     const media = this.#media;
     this.#media = undefined;
-    await media.stop();
+    this.#stoppingMedia = media.stop();
+    await this.#stoppingMedia;
   }
 
   async updateMedia(state: JsonObject): Promise<void> {
@@ -148,11 +188,20 @@ export class LiveSessionClient {
 
   disconnect(): void {
     if (this.#closed) return;
-    if (this.#snapshot && this.#connection?.state === ConnectionState.Connected) {
-      this.#send("leave", { close: false });
-      this.#log("room.left");
+    try {
+      if (this.#snapshot && this.#connection?.state === ConnectionState.Connected) {
+        this.#send("leave", { close: false });
+        this.#log("room.left");
+      }
+    } finally {
+      this.#shutdown();
     }
-    this.#shutdown();
+  }
+
+  /** Disconnects and waits for media resources to finish closing. */
+  async close(): Promise<void> {
+    this.disconnect();
+    await this.#stoppingMedia;
   }
 
   async #exchange(endpoint: string): Promise<{ credentials: string; deviceId?: string; accessToken?: string }> {
@@ -240,11 +289,11 @@ export class LiveSessionClient {
       }, async () => {
         const socket = connection.websocket;
         try {
-          this.#snapshot = roomSnapshot(await (this.#snapshot
+          await (this.#snapshot
             ? this.#request("resume", { sid: this.#snapshot.sid })
             : this.#request("join", {
               room: this.address.roomId, creds: credentials, name: this.#options.name ?? "AI agent",
-            })));
+            }));
           return true;
         } catch (error) {
           if (connection.websocket !== socket || connection.state === ConnectionState.Reconnecting) return false;
@@ -300,7 +349,7 @@ export class LiveSessionClient {
         this.#pending.delete(mid);
         reject(new Error(`Live ${cmd} response timed out`));
       }, this.#options.timeoutMs ?? 15_000);
-      this.#pending.set(mid, { resolve, reject, timer });
+      this.#pending.set(mid, { cmd, resolve, reject, timer });
       try { this.#send(cmd, args); } catch (error) {
         clearTimeout(timer);
         this.#pending.delete(mid);
@@ -328,7 +377,22 @@ export class LiveSessionClient {
         clearTimeout(request.timer);
         this.#pending.delete(String(message.rid));
         if (message.error != null) request.reject(new Error("Live command was rejected by the server"));
-        else request.resolve(message.data);
+        else if (["join", "resume", "knock"].includes(request.cmd)) {
+          try {
+            this.#snapshot = roomSnapshot(message.data);
+            request.resolve(this.#snapshot);
+            if (request.cmd === "knock") this.#emit({ type: "joined", data: this.#snapshot });
+          } catch { request.reject(new Error("Live API returned an invalid room snapshot")); }
+        } else request.resolve(message.data);
+      } else if (message.cmd === "join" || message.cmd === "resume") {
+        try {
+          this.#snapshot = roomSnapshot(message.data);
+          this.#log("room.joined");
+          this.#emit({ type: "joined", data: this.#snapshot });
+        } catch {
+          this.#log("protocol.invalid-admission", "error");
+          this.#shutdown();
+        }
       }
       return;
     }
@@ -337,8 +401,8 @@ export class LiveSessionClient {
     const event: SessionEvent = { type: payload.type, data: payload.data,
       ...(typeof message.p === "string" ? { participantId: message.p } : {}) };
     this.#updateSnapshot(event);
-    if (event.type === "room.closed" || event.type === "duplicate-session") this.#shutdown();
     this.#emit(event);
+    if (event.type === "room.closed" || event.type === "duplicate-session") this.#shutdown();
   }
 
   #updateSnapshot(event: SessionEvent): void {
@@ -381,11 +445,17 @@ export class LiveSessionClient {
     }
   }
 
+  #validateCommand(cmd: string, args: JsonObject): void {
+    if (!cmd.trim() || ["join", "resume", "knock", "leave", "pub", "ping"].includes(cmd.toLowerCase())) {
+      throw new Error("Use the dedicated lifecycle or publish method for this command");
+    }
+    if ("cmd" in args || "mid" in args) throw new Error("Command arguments cannot override protocol fields");
+  }
+
   #shutdown(): void {
     if (this.#closed) return;
     this.#closed = true;
-    void this.#media?.stop().catch(() => this.#log("media.stop.failed", "error"));
-    this.#media = undefined;
+    void this.stopMedia().catch(() => this.#log("media.stop.failed", "error"));
     this.#accessToken = undefined;
     this.#abort.abort();
     this.#rejectPending();
@@ -403,7 +473,13 @@ export class LiveSessionClient {
   }
 
   #emit(event: SessionEvent): void {
-    for (const listener of this.#listeners) listener(event);
+    for (const listener of this.#listeners) {
+      try {
+        void Promise.resolve(listener(event)).catch(() => this.#log("event.handler.failed", "error"));
+      } catch {
+        this.#log("event.handler.failed", "error");
+      }
+    }
   }
 
   #log(operation: string, level: "info" | "error" = "info"): void {

@@ -57,6 +57,7 @@ export class MediaPublisher {
     this.#log("media.chromium.starting");
     this.#browser = await chromium.launch({
       headless: true,
+      handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
       args: ["--mute-audio", "--autoplay-policy=no-user-gesture-required", "--disable-background-timer-throttling",
         "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows"],
     });

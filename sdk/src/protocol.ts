@@ -22,11 +22,21 @@ export interface RoomSnapshot {
   lk?: { url: string; token: string };
 }
 
-export interface SessionEvent {
-  type: string;
-  data: unknown;
+export interface SessionEventMap {
+  joined: RoomSnapshot;
+  "room.joined": Participant;
+  "room.left": { cid: string };
+  "room.session.updated": JsonObject;
+  "recording.started": JsonObject;
+}
+
+export interface SessionEvent<T extends string = string> {
+  type: T;
+  data: T extends keyof SessionEventMap ? SessionEventMap[T] : unknown;
   participantId?: string;
 }
+
+export type EventHandler<T extends string = string> = (event: SessionEvent<T>) => void | Promise<void>;
 
 export function object(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
