@@ -1,0 +1,17 @@
+{
+  "name": "@shutter-studio/live-session-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Example CLI consuming the Live Session SDK",
+  "license": "Apache-2.0",
+  "bin": { "live-session": "./dist/cli.js" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@shutter-studio/live-session-sdk": "0.1.0"
+  }
+}

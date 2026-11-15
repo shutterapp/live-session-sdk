@@ -1,0 +1,18 @@
+title = "Live Session SDK secret scanning"
+betterleaksMinVersion = "1.10.1"
+
+# Dependencies and generated output are not maintained source.
+prefilter = '''
+filter.matchesAny(attributes["path"], [
+  `(?:^|/)(?:node_modules|dist|\.git)(?:/|$)`
+])
+'''
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "live-session-guest-token"
+description = "Live Session guest invitation credential"
+regex = '''(?i)[?&]g=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'''
+keywords = ["g="]

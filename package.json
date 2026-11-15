@@ -1,0 +1,32 @@
+{
+  "name": "live-session-sdk-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Live Session SDK and standalone example CLI",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shutterapp/live-session-sdk.git"
+  },
+  "workspaces": ["sdk", "example-app"],
+  "engines": {
+    "node": ">=22",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "build": "npm run build -w sdk && npm run build -w example-app",
+    "test": "npm run test -w sdk",
+    "start": "npm run start -w example-app --",
+    "install:chromium": "playwright install chromium",
+    "secrets:scan": "betterleaks dir . --config .betterleaks.toml --redact --validation=false",
+    "secrets:history": "betterleaks git . --config .betterleaks.toml --redact --validation=false",
+    "secrets:staged": "betterleaks git . --pre-commit --staged --config .betterleaks.toml --redact --validation=false",
+    "hooks:install": "git config --local core.hooksPath .githooks"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "~5.8.3",
+    "ws": "^8.18.0"
+  }
+}

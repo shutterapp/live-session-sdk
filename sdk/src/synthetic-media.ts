@@ -1,0 +1,155 @@
+import { chromium, type Browser, type Page } from "playwright";
+import { object, type RoomSnapshot, type SessionEvent } from "./protocol.js";
+import { installMediaWorker, type MediaCommand, type MediaStats } from "./media-worker.js";
+
+export interface SyntheticMediaOptions {
+  /** Overrides ICE discovery, useful for custom TURN configurations or local peers. */
+  iceServers?: RTCIceServer[];
+  /** Full ICE HTTP endpoint; defaults to <base>/api/legacy-rooms/ice. */
+  iceUrl?: string;
+}
+
+interface MediaSession {
+  readonly snapshot: RoomSnapshot | undefined;
+  onEvent(listener: (event: SessionEvent) => void): () => void;
+  publish(type: string, data: unknown, recipientId?: string): void;
+}
+
+/** Node owns Live signaling; Chromium owns generated tracks and modern browser P2P WebRTC. */
+export class SyntheticMediaPublisher {
+  #session: MediaSession;
+  #iceServers: RTCIceServer[];
+  #log: (operation: string, error?: boolean) => void;
+  #browser?: Browser;
+  #page?: Page;
+  #unsubscribe?: () => void;
+  #startup?: Promise<void>;
+  #shutdown?: Promise<void>;
+  #stopped = false;
+  #work: Promise<void> = Promise.resolve();
+
+  constructor(session: MediaSession, iceServers: RTCIceServer[], log: (operation: string, error?: boolean) => void) {
+    this.#session = session;
+    this.#iceServers = iceServers;
+    this.#log = log;
+  }
+
+  start(): Promise<void> {
+    if (this.#startup || this.#stopped) throw new Error("Media publisher already started or stopped");
+    this.#startup = this.#start();
+    return this.#startup;
+  }
+
+  async #start(): Promise<void> {
+    this.#log("media.chromium.starting");
+    this.#browser = await chromium.launch({
+      headless: true,
+      args: ["--autoplay-policy=no-user-gesture-required", "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows"],
+    });
+    if (this.#stopped) return;
+    this.#browser.on("disconnected", () => {
+      if (!this.#stopped) {
+        this.#log("media.chromium.disconnected", true);
+        void this.stop();
+      }
+    });
+    this.#page = await this.#browser.newPage();
+    // A locally fulfilled secure origin enables browser crypto without external HTTP traffic.
+    await this.#page.route("https://shutter-media.invalid/", route => route.fulfill({
+      contentType: "text/html", body: "<!doctype html><html><body></body></html>",
+    }));
+    await this.#page.goto("https://shutter-media.invalid/");
+    await this.#page.exposeFunction("shutterMediaSignal", (type: string, data: unknown, recipientId: string) => {
+      if (this.#stopped) return;
+      try { this.#session.publish(type, data, recipientId); } catch {
+        this.#log("media.signal.failed", true);
+        void this.stop();
+      }
+    });
+    await this.#page.exposeFunction("shutterMediaLog", (operation: string, error: boolean) => {
+      if (!this.#stopped) this.#log(operation, error);
+    });
+    await this.#page.evaluate(installMediaWorker, this.#iceServers);
+    if (this.#stopped) return;
+    this.#unsubscribe = this.#session.onEvent(event => {
+      if (["disconnected", "room.closed", "duplicate-session"].includes(event.type)) {
+        void this.stop();
+        return;
+      }
+      this.#enqueue(() => this.#handle(event));
+    });
+    await this.#enterLive();
+    this.#log("media.generators.started");
+  }
+
+  /** Stops tracks and closes this worker's Chromium. Signaling remains usable. */
+  stop(): Promise<void> {
+    if (this.#shutdown) return this.#shutdown;
+    this.#stopped = true;
+    this.#unsubscribe?.();
+    this.#shutdown = (async () => {
+      await this.#startup?.catch(() => {});
+      try {
+        if (this.#page && !this.#page.isClosed()) await this.#page.evaluate(() => window.shutterMedia?.stop());
+      } catch {
+        // A crashed renderer is already gone; closing its browser is still required.
+      } finally {
+        await this.#browser?.close();
+        this.#log("media.stopped");
+      }
+    })();
+    return this.#shutdown;
+  }
+
+  async stats(): Promise<MediaStats[]> {
+    if (this.#stopped || !this.#page) return [];
+    return this.#page.evaluate(() => window.shutterMedia.stats());
+  }
+
+  #enqueue(action: () => Promise<void>): void {
+    this.#work = this.#work.then(async () => {
+      if (!this.#stopped) await action();
+    }).catch(() => {
+      if (!this.#stopped) {
+        this.#log("media.signaling.failed", true);
+        void this.stop();
+      }
+    });
+  }
+
+  async #enterLive(): Promise<void> {
+    const room = this.#session.snapshot;
+    if (room?.area !== "Live" || this.#stopped) return;
+    this.#announceDevices();
+    await this.#command({
+      kind: "enter", selfId: room.self.cid,
+      participants: (room.pts ?? []).filter(p => p.cid !== room.self.cid && !p.l).map(p => p.cid),
+    });
+  }
+
+  async #handle(event: SessionEvent): Promise<void> {
+    if (event.type === "joined") { await this.#enterLive(); return; }
+    if (event.type === "room.left" && object(event.data) && typeof event.data.cid === "string") {
+      await this.#command({ kind: "leave", participantId: event.data.cid });
+    } else if (event.type.startsWith("webrtc.p2p.") && object(event.data)) {
+      await this.#command({ kind: "event", type: event.type, participantId: event.participantId, data: event.data });
+    }
+  }
+
+  async #command(command: MediaCommand): Promise<void> {
+    await this.#page?.evaluate(command => window.shutterMedia.handle(command), command);
+  }
+
+  #announceDevices(): void {
+    this.#session.publish("device.devices.list", [
+      { id: "synthetic-mic", kind: "audioinput", label: "White noise" },
+      { id: "synthetic-camera", kind: "videoinput", label: "Generated test pattern" },
+    ]);
+    this.#session.publish("device.devices.state", {
+      audioinput: { current: "synthetic-mic", pending: null, paused: false, echoCancellation: false, noiseSuppression: false },
+      videoinput: { current: "synthetic-camera", pending: null, paused: false },
+      audiooutput: { current: null, pending: null, paused: true },
+    });
+  }
+}
