@@ -4,7 +4,7 @@ TypeScript SDK for joining Shutter Studio Live Sessions, exchanging participant
 events and sending or receiving audio/video. Includes a producer agent example
 that transcribes the host and displays captions in the room.
 
-The SDK is in `sdk/`; the example is in `example-app/`. Both are experimental
+The SDK is in `sdk/`; the producer agent is in `examples/producer-agent/`. Both are experimental
 and not published to npm.
 
 ## Run the example
@@ -61,6 +61,8 @@ licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
 ## Use the SDK
 
+See the [examples guide](examples/README.md) to configure credentials, create a session and print its guest URL.
+
 Build and install the SDK into another local project:
 
 ```sh
@@ -110,10 +112,24 @@ ongoing work. Register cleanup before starting asynchronous work. Call
 Entry or event-handler failures end the run and reject its promise. Application
 work must honor cancellation; the SDK does not forcibly terminate your code.
 
-See [`example-app/src/producer-agent.ts`](example-app/src/producer-agent.ts) for
+See [`examples/producer-agent/src/producer-agent.ts`](examples/producer-agent/src/producer-agent.ts) for
 the producer agent definition.
 
 ### Connect directly
+
+To create a photo session and share the guest invite before entering the room:
+
+```ts
+import { createSession, getGuestInviteUrl, LiveSessionClient } from "@shutter-studio/live-session-sdk";
+
+const access = { baseUrl, apiToken };
+const session = await createSession(access, "Portrait");
+const invite = await getGuestInviteUrl(access, session.shootId);
+if (invite) await sendInvite(invite); // Your delivery method.
+```
+
+For photo shoots, the link opens the latest session. You can create and share
+an invite with an API key. Joining as Host with that key isn't supported yet.
 
 Use `LiveSessionClient` when you want to manage the connection and lifecycle yourself:
 
@@ -216,7 +232,7 @@ or `degradationPreference`. Use `iceUrl` to override ICE discovery, or supply
 `browserPermissions` grants requested permissions to the media page automatically;
 for example, `["local-network-access"]` allows a source to connect to local services.
 
-See [`example-app/src/browser-entry.ts`](example-app/src/browser-entry.ts) for
+See [`examples/producer-agent/src/browser-entry.ts`](examples/producer-agent/src/browser-entry.ts) for
 a complete media source.
 
 ## Recording

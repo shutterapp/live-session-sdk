@@ -15,18 +15,18 @@ export async function sessionServer(t, options = {}) {
   const server = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
-    requests.push({ method: req.method, path: req.url, body: JSON.parse(body), headers: req.headers });
+    requests.push({ method: req.method, path: req.url, body: body ? JSON.parse(body) : undefined, headers: req.headers });
     if (options.redirect) {
       res.writeHead(307, { Location: "/must-not-follow" }).end();
       return;
     }
     res.writeHead(options.httpStatus ?? 200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(options.invalidCredentials ? { ws: {} } : {
+    res.end(JSON.stringify(options.responses?.[req.url] ?? (options.invalidCredentials ? { ws: {} } : {
       deviceId: "device-agent",
       session: { role: "subject", token: "private-access-token" },
       ws: { url: "wss://legacy.example/ws", token: "201|9" },
       lk: { url: "wss://media.example", token: "private-media-token" },
-    }));
+    })));
   });
   const ws = new WebSocketServer({ server, path: "/api/live/ws" });
   ws.on("connection", socket => {
@@ -47,7 +47,7 @@ export async function sessionServer(t, options = {}) {
       }));
       if (message.cmd === "join" && !options.silentJoin) {
         if (options.joinError) socket.send(JSON.stringify({ type: "resp", rid: message.mid, error: "forbidden" }));
-        else reply(options.malformedSnapshot ? { area: "Live" } : snapshot);
+        else reply(options.malformedSnapshot ? { area: "Live" } : options.joinSnapshot ?? snapshot);
       }
       if (message.cmd === "resume") reply(room);
       if (message.cmd === "knock") {

@@ -11,16 +11,16 @@
   },
   "workspaces": [
     "sdk",
-    "example-app"
+    "examples/producer-agent"
   ],
   "engines": {
     "node": ">=22",
     "npm": ">=10"
   },
   "scripts": {
-    "build": "npm run build -w sdk && npm run build -w example-app",
+    "build": "npm run build -w sdk && npm run build -w examples/producer-agent",
     "test": "npm run test -w sdk",
-    "start": "npm run start -w example-app --",
+    "start": "npm run start -w examples/producer-agent --",
     "install:chromium": "playwright install chromium",
     "secrets:scan": "betterleaks dir . --config .betterleaks.toml --redact --validation=false",
     "secrets:history": "betterleaks git . --config .betterleaks.toml --redact --validation=false",

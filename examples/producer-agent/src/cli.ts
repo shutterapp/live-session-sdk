@@ -7,7 +7,7 @@ import { ensureParakeetModel } from "./parakeet-model.js";
 import { createProducerAgent } from "./producer-agent.js";
 
 const defaultModelDirectory = fileURLToPath(new URL(
-  "../../models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8", import.meta.url,
+  "../../../models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8", import.meta.url,
 ));
 
 const usage = `Usage: live-session '<guest URL>' [--name 'Producer agent']

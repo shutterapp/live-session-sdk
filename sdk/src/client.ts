@@ -3,6 +3,9 @@ import type { AlwaysConnected as ConnectionManager, ConnectionStateChangeEvent }
 import { parseGuestUrl, type GuestSessionAddress } from "./guest-url.js";
 import { object, participant, roomSnapshot, type EventHandler, type JsonObject, type RoomSnapshot, type SessionEvent } from "./protocol.js";
 import type { MediaOptions, MediaPublisher } from "./media.js";
+import { apiBase, type ApiAccess } from "./sessions.js";
+
+export interface HostSession extends ApiAccess { sessionId: string; roomId: string }
 
 // Version 0.2.0's ESM entry has extensionless imports that Node cannot resolve.
 const { AlwaysConnected, ConnectionState } = createRequire(import.meta.url)("@deilux/websocket-js") as typeof import("@deilux/websocket-js");
@@ -27,7 +30,8 @@ interface PendingRequest {
 }
 
 export class LiveSessionClient {
-  readonly address: GuestSessionAddress;
+  readonly address: Omit<GuestSessionAddress, "guestToken"> & { guestToken?: string };
+  #hostToken?: string;
   #options: ClientOptions;
   #connection?: ConnectionManager;
   #snapshot?: RoomSnapshot;
@@ -45,8 +49,13 @@ export class LiveSessionClient {
   #closed = false;
   #abort = new AbortController();
 
-  constructor(guestUrl: string, options: ClientOptions = {}) {
-    this.address = parseGuestUrl(guestUrl);
+  constructor(target: string | HostSession, options: ClientOptions = {}) {
+    if (typeof target === "string") this.address = parseGuestUrl(target);
+    else {
+      if (!target.roomId?.trim() || !/^[1-9]\d*$/.test(target.sessionId)) throw new Error("Invalid host session");
+      this.address = { baseUrl: apiBase(target), sessionId: target.sessionId, roomId: target.roomId };
+      this.#hostToken = target.apiToken;
+    }
     this.#options = options;
     for (const value of [options.timeoutMs ?? 15_000, options.heartbeatMs ?? 10_000]) {
       if (!Number.isFinite(value) || value <= 0) throw new Error("Timeouts must be positive numbers");
@@ -114,11 +123,14 @@ export class LiveSessionClient {
       if (!["ws:", "wss:"].includes(url.protocol) || url.username || url.password) {
         throw new Error("WebSocket endpoint must use WS(S) without user credentials");
       }
-      this.#log("guest.exchange.started");
+      const exchange = this.#hostToken ? "host.exchange" : "guest.exchange";
+      if (this.#hostToken && (httpUrl.origin !== new URL(this.address.baseUrl).origin ||
+          url.origin.replace(/^ws/, "http") !== httpUrl.origin)) throw new Error("Host endpoints must use the API origin");
+      this.#log(`${exchange}.started`);
       const joined = await this.#exchange(httpUrl.toString());
       this.#deviceId = joined.deviceId;
-      this.#accessToken = joined.accessToken;
-      this.#log("guest.exchange.completed");
+      this.#accessToken = joined.accessToken ?? this.#hostToken;
+      this.#log(`${exchange}.completed`);
       if (this.#closed) throw new Error("Client is closed");
       this.#log("websocket.connecting");
       await this.#open(url.toString(), joined.credentials);
@@ -209,7 +221,8 @@ export class LiveSessionClient {
     try {
       response = await fetch(endpoint, {
         method: "POST", redirect: "error",
-        headers: { "Content-Type": "application/json", "User-Agent": "studio-live-session-sdk/0.1" },
+        headers: { "Content-Type": "application/json", "User-Agent": "studio-live-session-sdk/0.1",
+          ...(this.#hostToken && { Authorization: `Bearer ${this.#hostToken}` }) },
         signal: AbortSignal.any([this.#abort.signal, AbortSignal.timeout(this.#options.timeoutMs ?? 15_000)]),
         body: JSON.stringify({
           roomId: this.address.roomId, joinToken: this.address.guestToken,
@@ -223,15 +236,16 @@ export class LiveSessionClient {
         }),
       });
     } catch {
-      throw new Error("Rooms invitation exchange failed (network, redirect, cancellation, or timeout)");
+      throw new Error(`Rooms ${this.#hostToken ? "host" : "invitation"} exchange failed (network, redirect, cancellation, or timeout)`);
     }
-    if (!response.ok) throw new Error(`Rooms invitation exchange rejected (HTTP ${response.status})`);
+    if (!response.ok) throw new Error(`Rooms ${this.#hostToken ? "host" : "invitation"} exchange rejected (HTTP ${response.status})`);
     let data: unknown;
     try { data = await response.json(); } catch { throw new Error("Rooms returned invalid JSON"); }
     if (!object(data) || !object(data.ws) || typeof data.ws.token !== "string" || !data.ws.token ||
         (data.deviceId != null && typeof data.deviceId !== "string")) {
       throw new Error("Rooms returned invalid participant credentials");
     }
+    if (this.#hostToken && (!object(data.session) || data.session.role !== "host")) throw new Error("Rooms did not authorize Host access");
     // ws.url may advertise a legacy signaling server; Photo Session App also uses a configured Live URL.
     return {
       credentials: data.ws.token, deviceId: data.deviceId as string | undefined,
@@ -241,6 +255,7 @@ export class LiveSessionClient {
 
   async #loadIceServers(endpoint: string): Promise<RTCIceServer[]> {
     const url = new URL(endpoint);
+    if (this.#hostToken && url.origin !== new URL(this.address.baseUrl).origin) throw new Error("Host ICE endpoint must use the API origin");
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
       throw new Error("Invalid ICE endpoint");
     }
@@ -379,14 +394,17 @@ export class LiveSessionClient {
         if (message.error != null) request.reject(new Error("Live command was rejected by the server"));
         else if (["join", "resume", "knock"].includes(request.cmd)) {
           try {
-            this.#snapshot = roomSnapshot(message.data);
+            this.#snapshot = this.#readSnapshot(message.data);
             request.resolve(this.#snapshot);
             if (request.cmd === "knock") this.#emit({ type: "joined", data: this.#snapshot });
-          } catch { request.reject(new Error("Live API returned an invalid room snapshot")); }
+          } catch (error) {
+            request.reject(error instanceof Error ? error : new Error("Invalid room snapshot"));
+            if (request.cmd === "knock") this.#shutdown();
+          }
         } else request.resolve(message.data);
       } else if (message.cmd === "join" || message.cmd === "resume") {
         try {
-          this.#snapshot = roomSnapshot(message.data);
+          this.#snapshot = this.#readSnapshot(message.data);
           this.#log("room.joined");
           this.#emit({ type: "joined", data: this.#snapshot });
         } catch {
@@ -403,6 +421,12 @@ export class LiveSessionClient {
     this.#updateSnapshot(event);
     this.#emit(event);
     if (event.type === "room.closed" || event.type === "duplicate-session") this.#shutdown();
+  }
+
+  #readSnapshot(data: unknown): RoomSnapshot {
+    const snapshot = roomSnapshot(data);
+    if (this.#hostToken && snapshot.self.r !== "Host") throw new Error("Live did not authorize Host access");
+    return snapshot;
   }
 
   #updateSnapshot(event: SessionEvent): void {
