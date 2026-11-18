@@ -1,0 +1,19 @@
+{
+  "name": "@shutter-studio/caption-media",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./dist/*.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@shutter-studio/live-session-sdk": "0.1.0",
+    "ws": "^8.23.0"
+  },
+  "optionalDependencies": {
+    "sherpa-onnx-node": "2.0.1"
+  }
+}

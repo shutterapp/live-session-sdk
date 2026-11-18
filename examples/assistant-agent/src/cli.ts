@@ -3,16 +3,16 @@ import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runAgent } from "@shutter-studio/live-session-sdk";
-import { ensureParakeetModel } from "./parakeet-model.js";
-import { createProducerAgent } from "./producer-agent.js";
+import { ensureParakeetModel } from "@shutter-studio/caption-media/parakeet-model";
+import { createAssistantAgent } from "./assistant-agent.js";
 
 const defaultModelDirectory = fileURLToPath(new URL(
   "../../../models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8", import.meta.url,
 ));
 
-const usage = `Usage: live-session '<guest URL>' [--name 'Producer agent']
+const usage = `Usage: live-session '<guest URL>' [--name 'Assistant agent']
 
-Runs the producer agent in a Shutter Studio Live Session.
+Runs the assistant agent in a Shutter Studio Live Session.
 Host speech is transcribed locally and displayed as video captions.
 Completed transcripts are printed to stdout as JSON.
 Requires Chromium. Missing model files are downloaded before joining.
@@ -54,14 +54,14 @@ async function main(): Promise<void> {
       if (shutdown.signal.aborted) return;
       throw error;
     }
-    const agent = createProducerAgent({
+    const agent = createAssistantAgent({
       modelDirectory, numThreads: values["stt-threads"] ? Number(values["stt-threads"]) : undefined,
     }, log);
     await runAgent(agent, {
       guestUrl: positionals[0]!,
       signal: shutdown.signal,
       connection: {
-        name: values.name ?? "Producer agent",
+        name: values.name ?? "Assistant agent",
         logger: entry => log(entry.operation, entry.level === "error"),
       },
     });

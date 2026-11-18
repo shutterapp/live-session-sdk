@@ -1,0 +1,23 @@
+{
+  "name": "@shutter-studio/assistant-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Assistant agent example using the Live Session SDK",
+  "license": "Apache-2.0",
+  "bin": {
+    "live-session": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && esbuild src/browser-entry.ts --bundle --platform=browser --format=iife --target=chrome120 --outfile=dist/browser.js --log-level=warning",
+    "prestart": "npm run build -w @shutter-studio/live-session-sdk && npm run build -w @shutter-studio/caption-media && npm run build",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@shutter-studio/live-session-sdk": "0.1.0",
+    "@shutter-studio/caption-media": "0.1.0"
+  }
+}

@@ -3,9 +3,11 @@ import type { AlwaysConnected as ConnectionManager, ConnectionStateChangeEvent }
 import { parseGuestUrl, type GuestSessionAddress } from "./guest-url.js";
 import { object, participant, roomSnapshot, type EventHandler, type JsonObject, type RoomSnapshot, type SessionEvent } from "./protocol.js";
 import type { MediaOptions, MediaPublisher } from "./media.js";
-import { apiBase, type ApiAccess } from "./sessions.js";
+import type { DeviceList, DeviceState } from "./devices.js";
+import { apiBase, createSession, getGuestInviteUrl, type ApiAccess } from "./sessions.js";
 
-export interface HostSession extends ApiAccess { sessionId: string; roomId: string }
+export interface HostSession extends ApiAccess { roomId: string; sessionId?: string }
+type SessionAddress = Pick<GuestSessionAddress, "baseUrl" | "roomId"> & { sessionId?: string; guestToken?: string };
 
 // Version 0.2.0's ESM entry has extensionless imports that Node cannot resolve.
 const { AlwaysConnected, ConnectionState } = createRequire(import.meta.url)("@deilux/websocket-js") as typeof import("@deilux/websocket-js");
@@ -30,7 +32,8 @@ interface PendingRequest {
 }
 
 export class LiveSessionClient {
-  readonly address: Omit<GuestSessionAddress, "guestToken"> & { guestToken?: string };
+  #address?: SessionAddress;
+  #access?: ApiAccess;
   #hostToken?: string;
   #options: ClientOptions;
   #connection?: ConnectionManager;
@@ -49,17 +52,70 @@ export class LiveSessionClient {
   #closed = false;
   #abort = new AbortController();
 
-  constructor(target: string | HostSession, options: ClientOptions = {}) {
-    if (typeof target === "string") this.address = parseGuestUrl(target);
-    else {
-      if (!target.roomId?.trim() || !/^[1-9]\d*$/.test(target.sessionId)) throw new Error("Invalid host session");
-      this.address = { baseUrl: apiBase(target), sessionId: target.sessionId, roomId: target.roomId };
-      this.#hostToken = target.apiToken;
+  constructor(options?: ClientOptions | (ClientOptions & ApiAccess));
+  constructor(target: string | HostSession, options?: ClientOptions);
+  constructor(target: string | HostSession | ClientOptions | (ClientOptions & ApiAccess) = {}, options: ClientOptions = {}) {
+    if (typeof target === "string") this.#address = parseGuestUrl(target);
+    else if ("apiToken" in target || "baseUrl" in target) {
+      const access = target as ApiAccess;
+      this.#access = { baseUrl: apiBase(access), apiToken: access.apiToken };
+      if ("roomId" in target) this.#setHost(target as HostSession);
+      else options = target as ClientOptions;
     }
+    else options = target;
     this.#options = options;
     for (const value of [options.timeoutMs ?? 15_000, options.heartbeatMs ?? 10_000]) {
       if (!Number.isFinite(value) || value <= 0) throw new Error("Timeouts must be positive numbers");
     }
+  }
+
+  get address(): SessionAddress {
+    if (!this.#address) throw new Error("Choose a session with joinAsHost() or joinAsGuest()");
+    return this.#address;
+  }
+
+  async createSession(title: string) {
+    return createSession(this.#apiAccess(), title);
+  }
+
+  async getGuestInviteUrl(shootId: string) {
+    return getGuestInviteUrl(this.#apiAccess(), shootId);
+  }
+
+  #apiAccess(): ApiAccess {
+    if (!this.#access) throw new Error("Configure the client with baseUrl and apiToken");
+    return this.#access;
+  }
+
+  async joinAsHost(roomId: string): Promise<RoomSnapshot> {
+    this.#requireUnused();
+    this.#setHost({ ...this.#apiAccess(), roomId });
+    return this.#connectAndKnock();
+  }
+
+  async joinAsGuest(inviteUrl: string): Promise<RoomSnapshot> {
+    this.#requireUnused();
+    this.#address = parseGuestUrl(inviteUrl);
+    this.#hostToken = undefined;
+    return this.#connectAndKnock();
+  }
+
+  #setHost(target: HostSession): void {
+    const { roomId, sessionId } = target;
+    if (!roomId?.trim() || (sessionId !== undefined && !/^[1-9]\d*$/.test(sessionId))) throw new Error("Invalid host session");
+    this.#address = { baseUrl: apiBase(target), roomId, ...(sessionId !== undefined && { sessionId }) };
+    this.#hostToken = target.apiToken;
+  }
+
+  async #connectAndKnock(): Promise<RoomSnapshot> {
+    await this.connect();
+    try { return await this.knock(); }
+    catch (error) { await this.close(); throw error; }
+  }
+
+  #requireUnused(): void {
+    if (this.#started) throw new Error("Client already started; create a new client to connect again");
+    if (this.#closed) throw new Error("Client is closed");
   }
 
   get snapshot(): RoomSnapshot | undefined { return this.#snapshot; }
@@ -110,7 +166,8 @@ export class LiveSessionClient {
 
   /** Joins Setup; knock() requests entry to Live. A client instance is single-use. */
   async connect(): Promise<RoomSnapshot> {
-    if (this.#started) throw new Error("Client already started; create a new client to connect again");
+    this.#requireUnused();
+    if (!this.#address) throw new Error("Choose a session with joinAsHost() or joinAsGuest()");
     this.#started = true;
     try {
       const roomsUrl = this.#options.roomsUrl ?? `${this.address.baseUrl}/api/rooms/v2/join-room`;
@@ -148,6 +205,16 @@ export class LiveSessionClient {
     await this.#request("knock", {});
     this.#log("room.knocked");
     return this.#snapshot!;
+  }
+
+  publishDeviceList(devices: DeviceList, recipientId?: string): void {
+    const list = (["videoinput", "audioinput", "audiooutput", "videooutput"] as const)
+      .flatMap(kind => (devices[kind] ?? []).map(({ id, label }) => ({ id, label, kind })));
+    this.publish("device.devices.list", list, recipientId);
+  }
+
+  publishDeviceState(state: DeviceState, recipientId?: string): void {
+    this.publish("device.devices.state", state, recipientId);
   }
 
   /** Sends a participant event. The server does not acknowledge pub commands. */
@@ -199,11 +266,22 @@ export class LiveSessionClient {
   }
 
   disconnect(): void {
+    this.#leave(false);
+  }
+
+  /** Sends the Host's leave-and-close command, then disconnects. Live sends no RPC acknowledgement. */
+  closeRoom(): void {
+    this.#requireJoined();
+    if (this.#snapshot?.self.r !== "Host") throw new Error("Only a Host can close the room");
+    this.#leave(true);
+  }
+
+  #leave(closeRoom: boolean): void {
     if (this.#closed) return;
     try {
       if (this.#snapshot && this.#connection?.state === ConnectionState.Connected) {
-        this.#send("leave", { close: false });
-        this.#log("room.left");
+        this.#send("leave", { close: closeRoom });
+        this.#log(closeRoom ? "room.close.requested" : "room.left");
       }
     } finally {
       this.#shutdown();
@@ -221,7 +299,7 @@ export class LiveSessionClient {
     try {
       response = await fetch(endpoint, {
         method: "POST", redirect: "error",
-        headers: { "Content-Type": "application/json", "User-Agent": "studio-live-session-sdk/0.1",
+        headers: { Accept: "application/json", "Content-Type": "application/json", "User-Agent": "studio-live-session-sdk/0.1",
           ...(this.#hostToken && { Authorization: `Bearer ${this.#hostToken}` }) },
         signal: AbortSignal.any([this.#abort.signal, AbortSignal.timeout(this.#options.timeoutMs ?? 15_000)]),
         body: JSON.stringify({
@@ -263,6 +341,7 @@ export class LiveSessionClient {
     const response = await fetch(url, {
       method: "POST", redirect: "error",
       headers: {
+        Accept: "application/json",
         "Content-Type": "application/json",
         ...(this.#accessToken ? { Authorization: `Bearer ${this.#accessToken}` } : {}),
       },

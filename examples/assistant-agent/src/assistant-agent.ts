@@ -1,20 +1,20 @@
 import { readFile } from "node:fs/promises";
 import { defineAgent, type JsonObject, type Room } from "@shutter-studio/live-session-sdk";
-import { ParakeetTranscriber, type ParakeetOptions } from "./parakeet.js";
-import { CaptionChannel } from "./caption-channel.js";
+import { ParakeetTranscriber, type ParakeetOptions } from "@shutter-studio/caption-media/parakeet";
+import { CaptionChannel } from "@shutter-studio/caption-media/caption-channel";
 
-export function createProducerAgent(options: ParakeetOptions,
+export function createAssistantAgent(options: ParakeetOptions,
     log: (operation: string, error?: boolean) => void) {
   return defineAgent({
     entry: async ctx => {
-      const producer = new ProducerAgent(ctx.room, options, log);
-      ctx.onShutdown(() => producer.stop());
-      await producer.start(ctx.signal);
+      const assistant = new AssistantAgent(ctx.room, options, log);
+      ctx.onShutdown(() => assistant.stop());
+      await assistant.start(ctx.signal);
     },
   });
 }
 
-export class ProducerAgent {
+export class AssistantAgent {
   #room: Room;
   #unsubscribe?: () => void;
   #mediaReady = false;
@@ -109,11 +109,12 @@ export class ProducerAgent {
 
   #announceDevices(): void {
     if (this.#room.snapshot?.area !== "Live") return;
-    this.#room.publish("device.devices.list", [
-      { id: "silent-mic", kind: "audioinput", label: "Silent microphone" },
-      { id: "matrix-camera", kind: "videoinput", label: "Matrix captions" },
-    ]);
-    this.#room.publish("device.devices.state", {
+    this.#room.publishDeviceList({
+      videoinput: [{ id: "matrix-camera", label: "Matrix captions" }],
+      audioinput: [{ id: "silent-mic", label: "Silent microphone" }],
+      audiooutput: [],
+    });
+    this.#room.publishDeviceState({
       audioinput: { current: "silent-mic", pending: null, paused: false, echoCancellation: false, noiseSuppression: false },
       videoinput: { current: "matrix-camera", pending: null, paused: false },
       audiooutput: { current: null, pending: null, paused: true },

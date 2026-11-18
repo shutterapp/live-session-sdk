@@ -11,6 +11,8 @@
   },
   "workspaces": [
     "sdk",
+    "examples/assistant-agent",
+    "examples/caption-media",
     "examples/producer-agent"
   ],
   "engines": {
@@ -18,14 +20,15 @@
     "npm": ">=10"
   },
   "scripts": {
-    "build": "npm run build -w sdk && npm run build -w examples/producer-agent",
+    "build": "npm run build -w sdk -w examples/caption-media -w examples/assistant-agent -w examples/producer-agent",
     "test": "npm run test -w sdk",
-    "start": "npm run start -w examples/producer-agent --",
+    "start": "npm run start -w examples/assistant-agent --",
     "install:chromium": "playwright install chromium",
     "secrets:scan": "betterleaks dir . --config .betterleaks.toml --redact --validation=false",
     "secrets:history": "betterleaks git . --config .betterleaks.toml --redact --validation=false",
     "secrets:staged": "betterleaks git . --pre-commit --staged --config .betterleaks.toml --redact --validation=false",
-    "hooks:install": "git config --local core.hooksPath .githooks"
+    "hooks:install": "git config --local core.hooksPath .githooks",
+    "producer": "npm start -w examples/producer-agent --"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -51,7 +51,8 @@ export async function sessionServer(t, options = {}) {
       }
       if (message.cmd === "resume") reply(room);
       if (message.cmd === "knock") {
-        room = { ...snapshot, area: options.waiting ? "WaitingRoom" : "Live", pts: options.participants ?? [self] };
+        const joined = options.joinSnapshot ?? snapshot;
+        room = { ...joined, area: options.waiting ? "WaitingRoom" : "Live", pts: options.participants ?? [joined.self] };
         reply(room);
       }
       if (message.cmd === "ping" && !options.silentPing) reply({ ts: Date.now(), offset: 0 });

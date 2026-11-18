@@ -4,7 +4,8 @@ import type { EventHandler, RoomSnapshot, SessionEvent } from "./protocol.js";
 /** Room capabilities shared with the low-level client, without connection ownership. */
 export interface Room extends Pick<LiveSessionClient,
   "deviceId" | "onEvent" | "on" | "command" | "sendCommand" |
-  "startRecording" | "stopRecording" | "publish" | "startMedia" | "updateMedia" | "stopMedia"> {
+  "startRecording" | "stopRecording" | "publish" | "publishDeviceList" | "publishDeviceState" |
+  "startMedia" | "updateMedia" | "stopMedia"> {
   readonly snapshot: RoomSnapshot;
 }
 
@@ -84,6 +85,8 @@ export async function runAgent(definition: AgentDefinition, options: RunOptions)
     startRecording: client.startRecording.bind(client),
     stopRecording: client.stopRecording.bind(client),
     publish: client.publish.bind(client),
+    publishDeviceList: client.publishDeviceList.bind(client),
+    publishDeviceState: client.publishDeviceState.bind(client),
     startMedia: client.startMedia.bind(client),
     updateMedia: client.updateMedia.bind(client),
     stopMedia: client.stopMedia.bind(client),

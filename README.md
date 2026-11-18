@@ -1,10 +1,10 @@
 # Shutter Studio Live Session SDK
 
 TypeScript SDK for joining Shutter Studio Live Sessions, exchanging participant
-events and sending or receiving audio/video. Includes a producer agent example
+events and sending or receiving audio/video. Includes an assistant agent example
 that transcribes the host and displays captions in the room.
 
-The SDK is in `sdk/`; the producer agent is in `examples/producer-agent/`. Both are experimental
+The SDK is in `sdk/`; the assistant agent is in `examples/assistant-agent/`. Both are experimental
 and not published to npm.
 
 ## Run the example
@@ -27,7 +27,7 @@ On Linux, if Chromium reports missing system libraries, run
 Later runs reuse the downloaded files. Keep optional npm dependencies enabled
 for the example.
 
-The producer agent joins Setup, requests admission to Live, and transcribes the host's
+The assistant agent joins Setup, requests admission to Live, and transcribes the host's
 English speech locally. It sends a 1280×720 Matrix-style caption video and a
 silent audio track. Captions appear after speech pauses. The listening indicator
 shows whether host audio is arriving.
@@ -48,7 +48,7 @@ credential, and quote it in shell commands.
 
 | Option | Meaning |
 |---|---|
-| `--name NAME` | Display name, default `Producer agent` |
+| `--name NAME` | Display name, default `Assistant agent` |
 | `--parakeet-model DIR` | Model directory, default `models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8` |
 | `--stt-threads N` | Inference threads, default `2`, range `1`–`16` |
 
@@ -112,8 +112,8 @@ ongoing work. Register cleanup before starting asynchronous work. Call
 Entry or event-handler failures end the run and reject its promise. Application
 work must honor cancellation; the SDK does not forcibly terminate your code.
 
-See [`examples/producer-agent/src/producer-agent.ts`](examples/producer-agent/src/producer-agent.ts) for
-the producer agent definition.
+See [`examples/assistant-agent/src/assistant-agent.ts`](examples/assistant-agent/src/assistant-agent.ts) for
+the assistant agent definition.
 
 ### Connect directly
 
@@ -128,8 +128,18 @@ const invite = await getGuestInviteUrl(access, session.shootId);
 if (invite) await sendInvite(invite); // Your delivery method.
 ```
 
-For photo shoots, the link opens the latest session. You can create and share
-an invite with an API key. Joining as Host with that key isn't supported yet.
+For photo shoots, the link opens the latest session. On a deployment with
+Rooms API-key support, join as Host using the same credentials:
+
+```ts
+const host = new LiveSessionClient({ ...access, ...session });
+await host.connect();
+await host.knock();
+// When finished:
+await host.close();
+```
+
+The API key must belong to the shoot's account.
 
 Use `LiveSessionClient` when you want to manage the connection and lifecycle yourself:
 
@@ -232,7 +242,7 @@ or `degradationPreference`. Use `iceUrl` to override ICE discovery, or supply
 `browserPermissions` grants requested permissions to the media page automatically;
 for example, `["local-network-access"]` allows a source to connect to local services.
 
-See [`examples/producer-agent/src/browser-entry.ts`](examples/producer-agent/src/browser-entry.ts) for
+See [`examples/assistant-agent/src/browser-entry.ts`](examples/assistant-agent/src/browser-entry.ts) for
 a complete media source.
 
 ## Recording
