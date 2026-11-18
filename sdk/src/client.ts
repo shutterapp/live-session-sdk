@@ -47,6 +47,8 @@ export class LiveSessionClient {
   #pending = new Map<string, PendingRequest>();
   #mid = 0;
   #latency = 0;
+  #clockOffsetMs = 0;
+  get clockOffsetMs(): number { return this.#clockOffsetMs; }
   #pingInFlight = false;
   #started = false;
   #closed = false;
@@ -532,7 +534,11 @@ export class LiveSessionClient {
     const socket = this.#connection?.websocket;
     const sentAt = Date.now();
     void this.#request("ping", { ts: sentAt, latency: this.#latency })
-      .then(() => { this.#latency = Math.round((Date.now() - sentAt) / 2); })
+      .then(data => {
+        const received = Date.now();
+        this.#latency = Math.round((received - sentAt) / 2);
+        if (object(data) && typeof data.ts === "number") this.#clockOffsetMs = data.ts + this.#latency - received;
+      })
       .catch(() => {
         if (this.#closed || this.#connection?.websocket !== socket ||
             this.#connection?.state !== ConnectionState.Connected) return;

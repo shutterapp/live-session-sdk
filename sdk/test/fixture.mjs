@@ -13,6 +13,10 @@ export async function sessionServer(t, options = {}) {
   const waiters = [];
   let room = snapshot;
   const server = createServer(async (req, res) => {
+    if (options.upload && req.url.startsWith("/api/media/v2/uploads/")) {
+      await options.upload(req, res);
+      return;
+    }
     let body = "";
     for await (const chunk of req) body += chunk;
     requests.push({ method: req.method, path: req.url, body: body ? JSON.parse(body) : undefined, headers: req.headers });

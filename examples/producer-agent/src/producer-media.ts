@@ -45,6 +45,7 @@ export class ProducerMedia {
     const script = await readFile(new URL("./browser.js", import.meta.url), "utf8");
     await this.client.startMedia({
       sourceScript: `window.studioCaptionChannel = ${JSON.stringify(config)};\n${script}`,
+      recordingDirectory: fileURLToPath(new URL("../recordings/", import.meta.url)),
       browserPermissions: ["local-network-access"],
       videoEncoding: { maxFramerate: 15, maxBitrate: 3_000_000, degradationPreference: "maintain-resolution" },
     });

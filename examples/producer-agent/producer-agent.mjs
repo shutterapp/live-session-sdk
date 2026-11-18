@@ -19,7 +19,29 @@ class ProducerAgent {
   }
 
   finish() {
-    if (!this.shutdown.signal.aborted) this.client.closeRoom();
+    if (this.shutdown.signal.aborted) return;
+    if (this.client.snapshot?.recording || this.startRequested) this.client.stopRecording();
+    this.client.closeRoom();
+  }
+
+  startRequested = false;
+
+  handleTranscript(text) {
+    if (this.shutdown.signal.aborted) return;
+    const recording = this.client.snapshot?.recording;
+    switch (text.trimStart().replace(/[\s\p{P}]+$/u, "").toLowerCase()) {
+      case "start recording":
+        if (!recording && !this.startRequested) {
+          this.client.startRecording();
+          this.startRequested = true;
+        }
+        break;
+      case "stop recording":
+        if (recording || this.startRequested) this.client.stopRecording(recording?.id);
+        break;
+      case "finish session":
+        this.finish();
+    }
   }
 
   async run() {
@@ -27,15 +49,17 @@ class ProducerAgent {
       this.shutdown.abort();
       resolve();
     }));
-    const media = new ProducerMedia(this.client, text => {
-      if (/^finish session[\s\p{P}]*$/iu.test(text.trimStart())) this.finish();
+    const resetStartRequest = this.client.onEvent(({ type }) => {
+      if (["recording.started", "recording.stopped", "joined"].includes(type)) this.startRequested = false;
     });
+    const media = new ProducerMedia(this.client, text => this.handleTranscript(text));
     try {
       await media.start(this.shutdown.signal);
       await disconnected;
     } catch (error) {
       if (!this.shutdown.signal.aborted) throw error;
     } finally {
+      resetStartRequest();
       await media.stop();
     }
   }

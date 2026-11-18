@@ -2,6 +2,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import { object, type JsonObject, type RoomSnapshot, type SessionEvent } from "./protocol.js";
 import { installMediaWorker, type MediaCommand, type MediaStats } from "./media-worker.js";
 import type { VideoEncodingOptions } from "./media-source.js";
+import { TrackRecording } from "./track-recording.js";
 
 export interface MediaOptions {
   /** Trusted browser bundle defining window.studioMediaSource. */
@@ -16,9 +17,13 @@ export interface MediaOptions {
   iceServers?: RTCIceServer[];
   /** Full ICE HTTP endpoint; defaults to <base>/api/legacy-rooms/ice. */
   iceUrl?: string;
+  /** Persist and upload the local A/V track when assigned by Live. */
+  recordingDirectory?: string;
 }
 
 interface MediaSession {
+  readonly address: { baseUrl: string };
+  readonly clockOffsetMs: number;
   readonly snapshot: RoomSnapshot | undefined;
   onEvent(listener: (event: SessionEvent) => void): () => void;
   publish(type: string, data: unknown, recipientId?: string): void;
@@ -37,6 +42,8 @@ export class MediaPublisher {
   #stopped = false;
   #reconnecting = false;
   #work: Promise<void> = Promise.resolve();
+  #recording?: TrackRecording;
+  #recordingError?: unknown;
   #options: MediaOptions;
 
   constructor(session: MediaSession, iceServers: RTCIceServer[], log: (operation: string, error?: boolean) => void,
@@ -79,6 +86,10 @@ export class MediaPublisher {
       contentType: "text/html", body: "<!doctype html><html><body></body></html>",
     }));
     await this.#page.goto("https://studio-media.invalid/");
+    if (this.#options.recordingDirectory) {
+      this.#recording = new TrackRecording(this.#page, this.#options.recordingDirectory, this.#session.address.baseUrl);
+      await this.#recording.install();
+    }
     await this.#page.exposeFunction("studioMediaSignal", (type: string, data: unknown, recipientId: string) => {
       if (this.#stopped || this.#reconnecting) return;
       try { this.#session.publish(type, data, recipientId); } catch {
@@ -101,6 +112,10 @@ export class MediaPublisher {
     });
     if (this.#stopped) return;
     this.#unsubscribe = this.#session.onEvent(event => {
+      if (this.#recording && ["recording.started", "recording.stopped"].includes(event.type)) {
+        this.#queueRecording(event);
+        return;
+      }
       if (event.type === "reconnecting") this.#reconnecting = true;
       if (event.type === "joined") this.#reconnecting = false;
       if (["disconnected", "room.closed", "duplicate-session"].includes(event.type)) {
@@ -109,6 +124,8 @@ export class MediaPublisher {
       }
       this.#enqueue(() => this.#handle(event));
     });
+    const assignment = this.#session.snapshot?.recording;
+    if (assignment?.tracks) this.#queueRecording({ type: "recording.started", data: assignment });
     await this.#enterLive();
     this.#log("media.source.started");
   }
@@ -121,10 +138,13 @@ export class MediaPublisher {
     this.#shutdown = (async () => {
       await this.#startup?.catch(() => {});
       try {
-        if (this.#page && !this.#page.isClosed()) await this.#page.evaluate(() => window.studioMedia?.stop());
-      } catch {
-        // A crashed renderer is already gone; closing its browser is still required.
+        await this.#work;
+        await this.#recording?.close();
+        if (this.#recordingError) throw this.#recordingError;
       } finally {
+        try {
+          if (this.#page && !this.#page.isClosed()) await this.#page.evaluate(() => window.studioMedia?.stop());
+        } catch { /* The renderer may already be gone. */ }
         await this.#browser?.close();
         this.#log("media.stopped");
       }
@@ -150,6 +170,24 @@ export class MediaPublisher {
         this.#log("media.signaling.failed", true);
         void this.stop();
       }
+    });
+  }
+
+  #queueRecording(event: SessionEvent): void {
+    this.#work = this.#work.then(async () => {
+      if (event.type === "recording.started") {
+        const startedAt = await this.#recording!.start(event.data, this.#session.snapshot!.self.cid);
+        if (startedAt && !this.#stopped && object(event.data)) {
+          this.#session.publish("local-recording.state", { state: "started", id: event.data.id,
+            startedAt: startedAt + this.#session.clockOffsetMs });
+        }
+      } else {
+        await this.#recording!.stop();
+        if (!this.#stopped) this.#session.publish("local-recording.state", { state: "stopped" });
+      }
+    }).catch(error => {
+      this.#recordingError ??= error;
+      this.#log("recording.track.failed", true);
     });
   }
 
