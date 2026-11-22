@@ -157,3 +157,4 @@ models/
 # roborev snapshots
 /.roborev/
 examples/producer-agent/recordings/
+examples/assistant-agent/recordings/

@@ -23,6 +23,8 @@ Each run creates a new session, prints its guest invitation URL to stdout, then 
 
 The [assistant agent](assistant-agent/) takes a guest URL as its argument. It joins the session and captions host speech.
 
+When the host starts a recording, the assistant records its outgoing caption video and silent audio. It keeps the WebM in `examples/assistant-agent/recordings/` and uploads it to the session as the assistant's track.
+
 ```sh
 npm run install:chromium
 npm start -- '<guest URL>'

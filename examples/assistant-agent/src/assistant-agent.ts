@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { defineAgent, type JsonObject, type Room } from "@shutter-studio/live-session-sdk";
 import { ParakeetTranscriber, type ParakeetOptions } from "@shutter-studio/caption-media/parakeet";
 import { CaptionChannel } from "@shutter-studio/caption-media/caption-channel";
@@ -58,6 +59,7 @@ export class AssistantAgent {
     if (this.#stopped) return;
     await this.#room.startMedia({
       sourceScript: `window.studioCaptionChannel = ${JSON.stringify(config)};\n${sourceScript}`,
+      recordingDirectory: fileURLToPath(new URL("../recordings/", import.meta.url)),
       browserPermissions: ["local-network-access"],
       videoEncoding: {
         maxBitrate: 3_000_000, maxFramerate: 15, scaleResolutionDownBy: 1, degradationPreference: "maintain-resolution",
