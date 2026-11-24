@@ -128,7 +128,12 @@ const invite = await getGuestInviteUrl(access, session.shootId);
 if (invite) await sendInvite(invite); // Your delivery method.
 ```
 
-For photo shoots, the link opens the latest session. On a deployment with
+Open `session.roomUrl` to join as Host in the browser without signing in.
+It contains a one-hour access token, so keep it private. Older servers can
+return `null`. Use `client.getHostJoinUrl(shootId)` to fetch a fresh link to the
+shoot's latest session.
+
+The guest invite opens the latest session for the shoot. On a deployment with
 Rooms API-key support, join as Host using the same credentials:
 
 ```ts

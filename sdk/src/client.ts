@@ -4,7 +4,7 @@ import { parseGuestUrl, type GuestSessionAddress } from "./guest-url.js";
 import { object, participant, roomSnapshot, type EventHandler, type JsonObject, type RoomSnapshot, type SessionEvent } from "./protocol.js";
 import type { MediaOptions, MediaPublisher } from "./media.js";
 import type { DeviceList, DeviceState } from "./devices.js";
-import { apiBase, createSession, getGuestInviteUrl, type ApiAccess } from "./sessions.js";
+import { apiBase, createSession, getGuestInviteUrl, getHostJoinUrl, type ApiAccess } from "./sessions.js";
 
 export interface HostSession extends ApiAccess { roomId: string; sessionId?: string }
 type SessionAddress = Pick<GuestSessionAddress, "baseUrl" | "roomId"> & { sessionId?: string; guestToken?: string };
@@ -82,6 +82,10 @@ export class LiveSessionClient {
 
   async getGuestInviteUrl(shootId: string) {
     return getGuestInviteUrl(this.#apiAccess(), shootId);
+  }
+
+  async getHostJoinUrl(shootId: string) {
+    return getHostJoinUrl(this.#apiAccess(), shootId);
   }
 
   #apiAccess(): ApiAccess {

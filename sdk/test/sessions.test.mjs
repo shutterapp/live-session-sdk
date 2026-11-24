@@ -11,6 +11,7 @@ test("create and share an invite using Dashboard HTTP alone", async t => {
   } });
   const client = new LiveSessionClient({ baseUrl: peer.baseUrl, apiToken: "test-key" });
   const session = await client.createSession("Portrait");
+  assert.deepEqual(session, { shootId: "42", sessionId: "17", roomId: "studio-room", roomUrl: null });
   assert.equal(await client.getGuestInviteUrl(session.shootId), url);
   assert.deepEqual(peer.requests.map(r => [r.method, r.path, r.headers.authorization]), [
     ["POST", "/api/v1/platform/sessions", "Bearer test-key"], ["GET", "/api/v1/platform/shoots/42", "Bearer test-key"],
@@ -19,7 +20,31 @@ test("create and share an invite using Dashboard HTTP alone", async t => {
   assert.deepEqual(peer.messages, []);
 });
 
+test("createSession returns the browser host URL supplied by Dashboard", async t => {
+  const roomUrl = "https://capture.example.com/sessions/17?roomId=studio-room&t=host-token";
+  const peer = await sessionServer(t, { responses: {
+    "/api/v1/platform/sessions": { shootId: "42", sessionId: "17", roomId: "studio-room", roomUrl },
+  } });
+  const client = new LiveSessionClient({ baseUrl: peer.baseUrl, apiToken: "test-key" });
+
+  const session = await client.createSession("Portrait");
+
+  assert.equal(session.roomUrl, roomUrl);
+});
+
 const hostResponse = { session: { role: "host" }, ws: { token: "server-issued" } };
+test("getHostJoinUrl reads the shoot's browser host URL without joining", async t => {
+  const hostJoinUrl = "https://capture.example.com/sessions/18?roomId=studio-room&t=host-token";
+  const peer = await sessionServer(t, { responses: { "/api/v1/platform/shoots/42": { hostJoinUrl } } });
+  const client = new LiveSessionClient({ baseUrl: peer.baseUrl, apiToken: "test-key" });
+
+  assert.equal(await client.getHostJoinUrl("42"), hostJoinUrl);
+  assert.deepEqual(peer.requests.map(r => [r.method, r.path, r.headers.authorization]), [
+    ["GET", "/api/v1/platform/shoots/42", "Bearer test-key"],
+  ]);
+  assert.deepEqual(peer.messages, []);
+});
+
 test("host joins with an explicit base URL, room ID and API token", async t => {
   const peer = await sessionServer(t, { responses: { "/api/rooms/v2/join-room": hostResponse },
     joinSnapshot: { ...snapshot, self: { ...snapshot.self, r: "Host" } } });

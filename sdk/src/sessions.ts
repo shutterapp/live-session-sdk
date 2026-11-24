@@ -1,7 +1,7 @@
 import { object } from "./protocol.js";
 
 export interface ApiAccess { baseUrl: string; apiToken: string }
-export interface SessionIds { shootId: string; sessionId: string; roomId: string }
+export interface SessionIds { shootId: string; sessionId: string; roomId: string; roomUrl: string | null }
 
 export function apiBase(access: ApiAccess): string {
   let url: URL;
@@ -29,13 +29,16 @@ async function dashboard(access: ApiAccess, path: string, body?: object): Promis
 /** Creates a photo session for a guest to be invited later. Never retried automatically. */
 export async function createSession(access: ApiAccess, title: string): Promise<SessionIds> {
   if (!title.trim()) throw new Error("A session title is required");
-  const { shootId, sessionId, roomId } = await dashboard(access, "sessions", {
+  const { shootId, sessionId, roomId, roomUrl } = await dashboard(access, "sessions", {
     modelName: title, hiresType: 1, inviteSubjectLater: true,
   });
   if (typeof shootId !== "string" || !/^[1-9]\d*$/.test(shootId) ||
       typeof sessionId !== "string" || !/^[1-9]\d*$/.test(sessionId) ||
       typeof roomId !== "string" || !roomId.trim()) throw new Error("Invalid session creation response");
-  return { shootId, sessionId, roomId };
+  if (roomUrl != null && (typeof roomUrl !== "string" || !/^https?:\/\//i.test(roomUrl))) {
+    throw new Error("Invalid host room URL");
+  }
+  return { shootId, sessionId, roomId, roomUrl: roomUrl ?? null };
 }
 
 /** Returns the server's share link for the shoot without entering its room. */
@@ -45,4 +48,13 @@ export async function getGuestInviteUrl(access: ApiAccess, shootId: string): Pro
   if (guestShareUrl == null) return null;
   if (typeof guestShareUrl !== "string" || !/^https?:\/\//i.test(guestShareUrl)) throw new Error("Invalid guest share URL");
   return guestShareUrl;
+}
+
+/** Returns a fresh browser Host link for the shoot's latest session, without joining. */
+export async function getHostJoinUrl(access: ApiAccess, shootId: string): Promise<string | null> {
+  if (!/^[1-9]\d*$/.test(shootId)) throw new Error("Invalid shoot ID");
+  const { hostJoinUrl } = await dashboard(access, `shoots/${shootId}`);
+  if (hostJoinUrl == null) return null;
+  if (typeof hostJoinUrl !== "string" || !/^https?:\/\//i.test(hostJoinUrl)) throw new Error("Invalid host join URL");
+  return hostJoinUrl;
 }
