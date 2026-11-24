@@ -17,6 +17,7 @@ test("create and share an invite using Dashboard HTTP alone", async t => {
     ["POST", "/api/v1/platform/sessions", "Bearer test-key"], ["GET", "/api/v1/platform/shoots/42", "Bearer test-key"],
   ]);
   assert.equal(peer.requests[0].body.inviteSubjectLater, true);
+  assert.equal("arborWorkspaceId" in peer.requests[0].body, false);
   assert.deepEqual(peer.messages, []);
 });
 
@@ -27,9 +28,10 @@ test("createSession returns the browser host URL supplied by Dashboard", async t
   } });
   const client = new LiveSessionClient({ baseUrl: peer.baseUrl, apiToken: "test-key" });
 
-  const session = await client.createSession("Portrait");
+  const session = await client.createSession("Portrait", { arborWorkspaceId: "workspace-custom" });
 
   assert.equal(session.roomUrl, roomUrl);
+  assert.equal(peer.requests[0].body.arborWorkspaceId, "workspace-custom");
 });
 
 const hostResponse = { session: { role: "host" }, ws: { token: "server-issued" } };

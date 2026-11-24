@@ -133,6 +133,9 @@ It contains a one-hour access token, so keep it private. Older servers can
 return `null`. Use `client.getHostJoinUrl(shootId)` to fetch a fresh link to the
 shoot's latest session.
 
+Pass `{ arborWorkspaceId: "your-workspace-id" }` as the optional last argument
+to `createSession` to select where Arbor creates the Story.
+
 The guest invite opens the latest session for the shoot. On a deployment with
 Rooms API-key support, join as Host using the same credentials:
 

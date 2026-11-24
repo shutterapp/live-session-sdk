@@ -1,6 +1,7 @@
 import { object } from "./protocol.js";
 
 export interface ApiAccess { baseUrl: string; apiToken: string }
+export interface CreateSessionOptions { arborWorkspaceId?: string }
 export interface SessionIds { shootId: string; sessionId: string; roomId: string; roomUrl: string | null }
 
 export function apiBase(access: ApiAccess): string {
@@ -27,10 +28,11 @@ async function dashboard(access: ApiAccess, path: string, body?: object): Promis
 }
 
 /** Creates a photo session for a guest to be invited later. Never retried automatically. */
-export async function createSession(access: ApiAccess, title: string): Promise<SessionIds> {
+export async function createSession(access: ApiAccess, title: string, options: CreateSessionOptions = {}): Promise<SessionIds> {
   if (!title.trim()) throw new Error("A session title is required");
   const { shootId, sessionId, roomId, roomUrl } = await dashboard(access, "sessions", {
     modelName: title, hiresType: 1, inviteSubjectLater: true,
+    arborWorkspaceId: options.arborWorkspaceId,
   });
   if (typeof shootId !== "string" || !/^[1-9]\d*$/.test(shootId) ||
       typeof sessionId !== "string" || !/^[1-9]\d*$/.test(sessionId) ||
