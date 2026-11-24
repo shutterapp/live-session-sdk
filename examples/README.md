@@ -2,6 +2,17 @@
 
 Run these commands from the repository root with Node.js 22+ and npm 10+. Install dependencies once with `npm ci`.
 
+## Create a session and print its links
+
+Set `STUDIO_BASE_URL` and `STUDIO_API_TOKEN` in `examples/.env` using the sample below, then run:
+
+```sh
+npm run build -w sdk
+node --env-file=examples/.env examples/create-session.mjs "Portrait"
+```
+
+The script does not join the room. Keep the one-hour host link private.
+
 ## Run the producer agent
 
 Copy the [sample](.env.sample) to `examples/.env`:
