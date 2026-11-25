@@ -18,8 +18,22 @@ test("create and share an invite using Dashboard HTTP alone", async t => {
   ]);
   assert.equal(peer.requests[0].body.inviteSubjectLater, true);
   assert.equal("arborWorkspaceId" in peer.requests[0].body, false);
+  assert.equal("arborAutoUpload" in peer.requests[0].body, false);
   assert.deepEqual(peer.messages, []);
 });
+
+for (const arborAutoUpload of [true, false, null]) {
+  test(`createSession sends arborAutoUpload=${arborAutoUpload}`, async t => {
+    const peer = await sessionServer(t, { responses: {
+      "/api/v1/platform/sessions": { shootId: "42", sessionId: "17", roomId: "studio-room" },
+    } });
+    const client = new LiveSessionClient({ baseUrl: peer.baseUrl, apiToken: "test-key" });
+
+    await client.createSession("Portrait", { arborAutoUpload });
+
+    assert.equal(peer.requests[0].body.arborAutoUpload, arborAutoUpload);
+  });
+}
 
 test("createSession returns the browser host URL supplied by Dashboard", async t => {
   const roomUrl = "https://capture.example.com/sessions/17?roomId=studio-room&t=host-token";
@@ -35,6 +49,32 @@ test("createSession returns the browser host URL supplied by Dashboard", async t
 });
 
 const hostResponse = { session: { role: "host" }, ws: { token: "server-issued" } };
+test("getSession reads both links and the stored Arbor settings without joining", async t => {
+  const guestShareUrl = "https://capture.example.com/sessions/18?roomId=studio-room&g=guest-token";
+  const hostJoinUrl = "https://capture.example.com/sessions/18?roomId=studio-room&t=host-token";
+  const peer = await sessionServer(t, { responses: { "/api/v1/platform/shoots/42": {
+    guestShareUrl, hostJoinUrl, arborAutoUpload: false, arborWorkspaceId: "workspace-custom",
+  } } });
+  const client = new LiveSessionClient({ baseUrl: peer.baseUrl, apiToken: "test-key" });
+
+  const session = await client.getSession("42");
+
+  assert.deepEqual(session, { shootId: "42", guestShareUrl, hostJoinUrl, arborAutoUpload: false, arborWorkspaceId: "workspace-custom" });
+  assert.deepEqual(peer.requests.map(r => [r.method, r.path, r.headers.authorization]), [
+    ["GET", "/api/v1/platform/shoots/42", "Bearer test-key"],
+  ]);
+  assert.deepEqual(peer.messages, []);
+});
+
+test("getSession returns null for missing links and settings", async t => {
+  const peer = await sessionServer(t, { responses: { "/api/v1/platform/shoots/42": {} } });
+  const client = new LiveSessionClient({ baseUrl: peer.baseUrl, apiToken: "test-key" });
+
+  assert.deepEqual(await client.getSession("42"), {
+    shootId: "42", guestShareUrl: null, hostJoinUrl: null, arborAutoUpload: null, arborWorkspaceId: null,
+  });
+});
+
 test("getHostJoinUrl reads the shoot's browser host URL without joining", async t => {
   const hostJoinUrl = "https://capture.example.com/sessions/18?roomId=studio-room&t=host-token";
   const peer = await sessionServer(t, { responses: { "/api/v1/platform/shoots/42": { hostJoinUrl } } });

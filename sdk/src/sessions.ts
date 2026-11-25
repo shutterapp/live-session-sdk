@@ -1,8 +1,18 @@
 import { object } from "./protocol.js";
 
 export interface ApiAccess { baseUrl: string; apiToken: string }
-export interface CreateSessionOptions { arborWorkspaceId?: string }
+export interface CreateSessionOptions {
+  arborWorkspaceId?: string;
+  arborAutoUpload?: boolean | null;
+}
 export interface SessionIds { shootId: string; sessionId: string; roomId: string; roomUrl: string | null }
+export interface SessionDetails {
+  shootId: string;
+  guestShareUrl: string | null;
+  hostJoinUrl: string | null;
+  arborAutoUpload: boolean | null;
+  arborWorkspaceId: string | null;
+}
 
 export function apiBase(access: ApiAccess): string {
   let url: URL;
@@ -33,6 +43,7 @@ export async function createSession(access: ApiAccess, title: string, options: C
   const { shootId, sessionId, roomId, roomUrl } = await dashboard(access, "sessions", {
     modelName: title, hiresType: 1, inviteSubjectLater: true,
     arborWorkspaceId: options.arborWorkspaceId,
+    arborAutoUpload: options.arborAutoUpload,
   });
   if (typeof shootId !== "string" || !/^[1-9]\d*$/.test(shootId) ||
       typeof sessionId !== "string" || !/^[1-9]\d*$/.test(sessionId) ||
@@ -43,20 +54,33 @@ export async function createSession(access: ApiAccess, title: string, options: C
   return { shootId, sessionId, roomId, roomUrl: roomUrl ?? null };
 }
 
-/** Returns the server's share link for the shoot without entering its room. */
-export async function getGuestInviteUrl(access: ApiAccess, shootId: string): Promise<string | null> {
+/** Reads shoot settings and links to its latest session without joining. */
+export async function getSession(access: ApiAccess, shootId: string): Promise<SessionDetails> {
   if (!/^[1-9]\d*$/.test(shootId)) throw new Error("Invalid shoot ID");
-  const { guestShareUrl } = await dashboard(access, `shoots/${shootId}`);
-  if (guestShareUrl == null) return null;
-  if (typeof guestShareUrl !== "string" || !/^https?:\/\//i.test(guestShareUrl)) throw new Error("Invalid guest share URL");
-  return guestShareUrl;
+  const { guestShareUrl, hostJoinUrl, arborAutoUpload, arborWorkspaceId } = await dashboard(access, `shoots/${shootId}`);
+  if (arborAutoUpload != null && typeof arborAutoUpload !== "boolean") throw new Error("Invalid Arbor auto-upload setting");
+  if (arborWorkspaceId != null && typeof arborWorkspaceId !== "string") throw new Error("Invalid Arbor workspace ID");
+  return {
+    shootId,
+    guestShareUrl: readLink(guestShareUrl, "guest share URL"),
+    hostJoinUrl: readLink(hostJoinUrl, "host join URL"),
+    arborAutoUpload: arborAutoUpload ?? null,
+    arborWorkspaceId: arborWorkspaceId ?? null,
+  };
 }
 
-/** Returns a fresh browser Host link for the shoot's latest session, without joining. */
+function readLink(value: unknown, label: string): string | null {
+  if (value == null) return null;
+  if (typeof value !== "string" || !/^https?:\/\//i.test(value)) throw new Error(`Invalid ${label}`);
+  return value;
+}
+
+/** Thin wrapper around {@link getSession} that returns only the guest invite URL. Prefer `getSession` directly. */
+export async function getGuestInviteUrl(access: ApiAccess, shootId: string): Promise<string | null> {
+  return (await getSession(access, shootId)).guestShareUrl;
+}
+
+/** Thin wrapper around {@link getSession} that returns only the host join URL. Prefer `getSession` directly. */
 export async function getHostJoinUrl(access: ApiAccess, shootId: string): Promise<string | null> {
-  if (!/^[1-9]\d*$/.test(shootId)) throw new Error("Invalid shoot ID");
-  const { hostJoinUrl } = await dashboard(access, `shoots/${shootId}`);
-  if (hostJoinUrl == null) return null;
-  if (typeof hostJoinUrl !== "string" || !/^https?:\/\//i.test(hostJoinUrl)) throw new Error("Invalid host join URL");
-  return hostJoinUrl;
+  return (await getSession(access, shootId)).hostJoinUrl;
 }

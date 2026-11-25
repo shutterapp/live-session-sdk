@@ -135,6 +135,12 @@ shoot's latest session.
 
 Pass `{ arborWorkspaceId: "your-workspace-id" }` as the optional last argument
 to `createSession` to select where Arbor creates the Story.
+Set `arborAutoUpload: true` in the same options to publish eligible recordings
+automatically. `false`, `null`, or omission leaves auto-publish off.
+
+`client.getSession(shootId)` fetches `guestShareUrl`, `hostJoinUrl`,
+`arborAutoUpload`, and `arborWorkspaceId` in one request. Missing values are
+`null`. Use this when you need both links or want to read the stored settings.
 
 The guest invite opens the latest session for the shoot. On a deployment with
 Rooms API-key support, join as Host using the same credentials:
